@@ -6,11 +6,13 @@ const TOOL_MODE_INSPECT := "inspect"
 const TOOL_MODE_GATHER_WOOD := "gather_wood"
 const TOOL_MODE_GATHER_STONE := "gather_stone"
 const TOOL_MODE_GATHER_FOOD := "gather_food"
+const TOOL_MODE_DESIGNATE_STOCKPILE := "designate_stockpile"
 const TOOL_MODE_LABELS := {
     TOOL_MODE_INSPECT: "Inspect",
     TOOL_MODE_GATHER_WOOD: "Chop Wood",
     TOOL_MODE_GATHER_STONE: "Gather Stone",
     TOOL_MODE_GATHER_FOOD: "Gather Food",
+    TOOL_MODE_DESIGNATE_STOCKPILE: "Stockpile",
 }
 
 @onready var label: Label = $Panel/StatusLabel
@@ -22,6 +24,7 @@ const TOOL_MODE_LABELS := {
 @onready var gather_wood_button: Button = $Panel/GatherWoodButton
 @onready var gather_stone_button: Button = $Panel/GatherStoneButton
 @onready var gather_food_button: Button = $Panel/GatherFoodButton
+@onready var stockpile_button: Button = $Panel/StockpileButton
 
 var sim_clock: SimClock
 var active_tool_mode: String = TOOL_MODE_INSPECT
@@ -48,6 +51,8 @@ func _ready() -> void:
         _connect_pressed(gather_stone_button, _on_tool_button_pressed.bind(TOOL_MODE_GATHER_STONE))
     if gather_food_button:
         _connect_pressed(gather_food_button, _on_tool_button_pressed.bind(TOOL_MODE_GATHER_FOOD))
+    if stockpile_button:
+        _connect_pressed(stockpile_button, _on_tool_button_pressed.bind(TOOL_MODE_DESIGNATE_STOCKPILE))
     _signals_connected = true
     _refresh_status_text(null)
 

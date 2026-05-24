@@ -7,11 +7,13 @@ const TOOL_MODE_INSPECT := "inspect"
 const TOOL_MODE_GATHER_WOOD := "gather_wood"
 const TOOL_MODE_GATHER_STONE := "gather_stone"
 const TOOL_MODE_GATHER_FOOD := "gather_food"
+const TOOL_MODE_DESIGNATE_STOCKPILE := "designate_stockpile"
 const TOOL_MODES: Array[String] = [
     TOOL_MODE_INSPECT,
     TOOL_MODE_GATHER_WOOD,
     TOOL_MODE_GATHER_STONE,
     TOOL_MODE_GATHER_FOOD,
+    TOOL_MODE_DESIGNATE_STOCKPILE,
 ]
 
 @onready var world_root: Node3D = $WorldRoot
@@ -54,6 +56,8 @@ func _unhandled_input(event: InputEvent) -> void:
             set_active_tool_mode(TOOL_MODE_GATHER_STONE)
         KEY_4:
             set_active_tool_mode(TOOL_MODE_GATHER_FOOD)
+        KEY_5:
+            set_active_tool_mode(TOOL_MODE_DESIGNATE_STOCKPILE)
 
 func _pick_grid_cell_from_mouse_position(mouse_position: Vector2) -> Vector2i:
     _resolve_child_nodes()
@@ -70,7 +74,11 @@ func _handle_grid_cell_designation(target_cell: Vector2i) -> Dictionary:
         return {"valid": false, "warning": "", "command_type": ""}
     if simulation == null:
         return {"valid": false, "warning": "Simulation is not ready", "command_type": ""}
-    var result: Dictionary = simulation.queue_designation_command(simulation.tick + 1, "player_001", active_tool_mode, target_cell, {"priority": 5})
+    var result: Dictionary
+    if active_tool_mode == TOOL_MODE_DESIGNATE_STOCKPILE:
+        result = simulation.queue_stockpile_designation_command(simulation.tick + 1, "player_001", target_cell, ["wood", "stone", "food"])
+    else:
+        result = simulation.queue_designation_command(simulation.tick + 1, "player_001", active_tool_mode, target_cell, {"priority": 5})
     if not bool(result["valid"]):
         _show_designation_warning(str(result["warning"]))
     return result

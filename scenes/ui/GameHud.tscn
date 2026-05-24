@@ -73,3 +73,10 @@ offset_top = 40.0
 offset_right = 448.0
 offset_bottom = 64.0
 text = "4 Gather Food"
+
+[node name="StockpileButton" type="Button" parent="Panel"]
+offset_left = 454.0
+offset_top = 40.0
+offset_right = 548.0
+offset_bottom = 64.0
+text = "5 Stockpile"
