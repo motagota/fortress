@@ -68,6 +68,31 @@ func create_stockpile(cells: Array, accepted_item_types: Array) -> String:
     stockpiles[id] = StockpileScript.new(id, accepted_item_types, cells)
     return id
 
+func designate_stockpile(start_cell: Vector2i, payload: Dictionary) -> String:
+    # Create a stockpile from a single seed cell, expanding to adjacent walkable cells
+    if not world.in_bounds(start_cell):
+        return ""
+    var cell = world.get_cell(start_cell)
+    if cell == null or not cell.walkable:
+        return ""
+    
+    var accepted_types: Array = payload.get("accepted_item_types", ["wood", "stone", "food"])
+    var cells: Array[Vector2i] = [start_cell]
+    
+    # Simple 3x3 expansion: add adjacent walkable cells
+    var directions: Array[Vector2i] = [
+        Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1),
+        Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1)
+    ]
+    for dir in directions:
+        var neighbor: Vector2i = start_cell + dir
+        if world.in_bounds(neighbor):
+            var neighbor_cell = world.get_cell(neighbor)
+            if neighbor_cell != null and neighbor_cell.walkable:
+                cells.append(neighbor)
+    
+    return create_stockpile(cells, accepted_types)
+
 func get_building_definition(building_type: String) -> Dictionary:
     return BuildingDefinitionScript.get_definition(building_type)
 
@@ -261,6 +286,22 @@ func queue_designation_command(command_tick: int, player_id: String, tool_mode: 
     result["command"] = queue_command(command_tick, player_id, str(result["command_type"]), target_cell, payload)
     return result
 
+func queue_stockpile_designation_command(command_tick: int, player_id: String, target_cell: Vector2i, accepted_item_types: Array = ["wood", "stone", "food"]) -> Dictionary:
+    var result: Dictionary = validate_stockpile_designation_target(target_cell)
+    if not bool(result["valid"]):
+        return result
+    var payload: Dictionary = {"accepted_item_types": accepted_item_types}
+    result["command"] = queue_command(command_tick, player_id, "DESIGNATE_STOCKPILE", target_cell, payload)
+    return result
+
+func validate_stockpile_designation_target(target_cell: Vector2i) -> Dictionary:
+    if world == null or not world.in_bounds(target_cell):
+        return {"valid": false, "warning": "Stockpile target is out of bounds", "stockpile_id": ""}
+    var cell = world.get_cell(target_cell)
+    if cell == null or not cell.walkable:
+        return {"valid": false, "warning": "Stockpile target must be walkable", "stockpile_id": ""}
+    return {"valid": true, "warning": "", "stockpile_id": ""}
+
 func validate_designation_target(tool_mode: String, target_cell: Vector2i) -> Dictionary:
     var spec: Dictionary = _designation_spec_for_tool_mode(tool_mode)
     if spec.is_empty():
@@ -388,6 +429,8 @@ func _apply_command(command: Dictionary) -> void:
             _create_job_for_resource(target, "stone", "GATHER_STONE", int(command["payload"].get("priority", 1)))
         "DESIGNATE_GATHER_FOOD":
             _create_job_for_resource(target, "berry", "GATHER_FOOD", int(command["payload"].get("priority", 1)))
+        "DESIGNATE_STOCKPILE":
+            designate_stockpile(target, command["payload"])
         "PLACE_BLUEPRINT":
             create_construction(str(command["payload"].get("building_type", "")), target, int(command["payload"].get("priority", 1)))
         "SET_UNIT_JOB_PRIORITY":
