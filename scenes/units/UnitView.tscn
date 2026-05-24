@@ -1,0 +1,19 @@
+[gd_scene load_steps=3 format=3 uid="uid://fortress_unit_view"]
+
+[ext_resource type="Script" path="res://scripts/presentation/unit_view.gd" id="1_unit_view"]
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_unit"]
+radius = 0.22
+height = 0.7
+
+[node name="UnitView" type="Node3D"]
+script = ExtResource("1_unit_view")
+
+[node name="Body" type="MeshInstance3D" parent="."]
+mesh = SubResource("CapsuleMesh_unit")
+position = Vector3(0, 0.35, 0)
+
+[node name="Label3D" type="Label3D" parent="."]
+position = Vector3(0, 1.05, 0)
+billboard = 1
+text = "Unit"

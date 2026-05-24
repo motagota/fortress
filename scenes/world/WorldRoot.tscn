@@ -1,0 +1,14 @@
+[gd_scene load_steps=2 format=3 uid="uid://fortress_world_root"]
+
+[ext_resource type="Script" path="res://scripts/presentation/world_renderer.gd" id="1_world_renderer"]
+
+[node name="WorldRoot" type="Node3D"]
+script = ExtResource("1_world_renderer")
+
+[node name="Terrain" type="Node3D" parent="."]
+
+[node name="Resources" type="Node3D" parent="."]
+
+[node name="Units" type="Node3D" parent="."]
+
+[node name="DebugLabels" type="Node3D" parent="."]

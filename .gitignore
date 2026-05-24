@@ -1,0 +1,24 @@
+# Godot-specific ignores
+.godot/
+*.d.gd
+*.remap
+
+# Imported translations (automatically generated)
+*.translation
+
+# Mono-specific ignores
+.mono/
+data_*/
+mono_crash.*.json
+
+# GodotPhysics singleton export template
+physics.godot
+
+# Misc ignores
+*.log
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db

@@ -1,0 +1,17 @@
+[gd_scene load_steps=2 format=3 uid="uid://fortress_game_hud"]
+
+[ext_resource type="Script" path="res://scripts/ui/game_hud.gd" id="1_game_hud"]
+
+[node name="GameHud" type="CanvasLayer"]
+script = ExtResource("1_game_hud")
+
+[node name="Panel" type="Panel" parent="."]
+offsets/right = 560.0
+offsets/bottom = 48.0
+
+[node name="StatusLabel" type="Label" parent="Panel"]
+offsets/left = 12.0
+offsets/top = 10.0
+offsets/right = 548.0
+offsets/bottom = 38.0
+text = "Fortress City"
