@@ -32,6 +32,8 @@ JobBoard="*res://scripts/simulation/job_board.gd"
 display/window/size/viewport_width=1920
 display/window/size/viewport_height=1080
 display/window/size/mode=1
+display/window/stretch/mode="canvas"
+display/window/stretch/aspect="expand"
 
 [rendering]
 
