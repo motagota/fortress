@@ -6,10 +6,18 @@ const TESTS := [
     "res://tests/test_seeded_rng.gd",
     "res://tests/test_simulation_primitives.gd",
     "res://tests/test_job_board.gd",
+    "res://tests/test_unit_jobs.gd",
     "res://tests/test_job_timers.gd",
     "res://tests/test_forest_fixture.gd",
     "res://tests/test_world_shell.gd",
     "res://tests/test_resource_job_completion.gd",
+    "res://tests/test_unit_job_lifecycle.gd",
+    "res://tests/test_time_controls.gd",
+    "res://tests/test_tool_modes.gd",
+    "res://tests/test_grid_picking_designations.gd",
+    "res://tests/test_stockpile_model.gd",
+    "res://tests/test_hauling_jobs.gd",
+    "res://tests/test_building_model.gd",
 ]
 
 func _initialize() -> void:

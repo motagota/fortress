@@ -9,6 +9,8 @@ script = ExtResource("1_world_renderer")
 
 [node name="Resources" type="Node3D" parent="."]
 
+[node name="Designations" type="Node3D" parent="."]
+
 [node name="Units" type="Node3D" parent="."]
 
 [node name="DebugLabels" type="Node3D" parent="."]

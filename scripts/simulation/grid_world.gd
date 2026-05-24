@@ -2,6 +2,7 @@ class_name GridWorld
 extends RefCounted
 
 const SimCellScript := preload("res://scripts/simulation/cell.gd")
+const DeterministicRngScript := preload("res://scripts/simulation/deterministic_rng.gd")
 
 var width: int
 var height: int
@@ -12,7 +13,7 @@ func _init(pwidth: int = 16, pheight: int = 16) -> void:
     height = pheight
     for z in range(height):
         for x in range(width):
-            var cell: SimCell = SimCell.new(x, z, "grass", true)
+            var cell = SimCellScript.new(x, z, "grass", true)
             cells[_key(Vector2i(x, z))] = cell
 
 func _key(pos: Vector2i) -> String:
@@ -21,20 +22,20 @@ func _key(pos: Vector2i) -> String:
 func in_bounds(pos: Vector2i) -> bool:
     return pos.x >= 0 and pos.y >= 0 and pos.x < width and pos.y < height
 
-func get_cell(pos: Vector2i) -> SimCell:
+func get_cell(pos: Vector2i) :
     if not in_bounds(pos):
         return null
     return cells[_key(pos)]
 
 func set_resource(pos: Vector2i, resource_id: String) -> bool:
-    var cell: SimCell = get_cell(pos)
+    var cell = get_cell(pos)
     if cell == null:
         return false
     cell.resource_id = resource_id
     return true
 
 func clear_resource(pos: Vector2i, resource_id: String = "") -> bool:
-    var cell: SimCell = get_cell(pos)
+    var cell = get_cell(pos)
     if cell == null:
         return false
     if resource_id != "" and cell.resource_id != resource_id:
@@ -42,13 +43,13 @@ func clear_resource(pos: Vector2i, resource_id: String = "") -> bool:
     cell.resource_id = ""
     return true
 
-func create_forest(rng: DeterministicRng, resource_index: Dictionary) -> void:
+func create_forest(rng, resource_index: Dictionary) -> void:
     # Deterministic seeded fixture: a small starting clearing surrounded by tree nodes.
     # This keeps the simulation data-only; presentation decides how trees look.
     var resource_count: int = 0
     for z in range(height):
         for x in range(width):
-            var cell: SimCell = get_cell(Vector2i(x, z))
+            var cell = get_cell(Vector2i(x, z))
             if x <= 2 and z <= 2:
                 cell.terrain = "dirt"
                 cell.resource_id = ""

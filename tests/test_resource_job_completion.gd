@@ -1,7 +1,7 @@
 extends RefCounted
 
-const Simulation := preload("res://scripts/simulation/simulation.gd")
-const SimJob := preload("res://scripts/simulation/job.gd")
+const SimulationScript = preload("res://scripts/simulation/simulation.gd")
+const SimJobScript = preload("res://scripts/simulation/job.gd")
 
 func _assert(cond: bool, message: String) -> bool:
     if not cond:
@@ -9,13 +9,13 @@ func _assert(cond: bool, message: String) -> bool:
         return false
     return true
 
-func _place_resource(sim: Simulation, resource_id: String, resource_type: String, pos: Vector2i, yield_override: Dictionary = {}) -> void:
+func _place_resource(sim, resource_id: String, resource_type: String, pos: Vector2i, yield_override: Dictionary = {}) -> void:
     sim.resources[resource_id] = {"id": resource_id, "type": resource_type, "position": [pos.x, pos.y]}
     if not yield_override.is_empty():
         sim.resources[resource_id]["yield"] = yield_override
     sim.world.set_resource(pos, resource_id)
 
-func _count_items_of_type(sim: Simulation, item_type: String) -> int:
+func _count_items_of_type(sim, item_type: String) -> int:
     var total: int = 0
     for id in sim.items.keys():
         var item = sim.items[id]
@@ -23,14 +23,14 @@ func _count_items_of_type(sim: Simulation, item_type: String) -> int:
             total += item.quantity
     return total
 
-func _step_until_jobs_complete(sim: Simulation, steps: int = 40) -> void:
+func _step_until_jobs_complete(sim, steps: int = 40) -> void:
     for i in range(steps):
         sim.step_tick()
 
 func _test_gather_stone_completion_creates_stone_item() -> bool:
-    var sim: Simulation = Simulation.new()
+    var sim = SimulationScript.new()
     sim.initialize_new_game(7)
-    var target := Vector2i(3, 1)
+    var target = Vector2i(3, 1)
     _place_resource(sim, "resource_stone_test", "stone", target, {"ore": 3})
 
     sim.queue_command(1, "player_001", "DESIGNATE_GATHER_STONE", target, {"priority": 4})
@@ -45,9 +45,9 @@ func _test_gather_stone_completion_creates_stone_item() -> bool:
     return ok
 
 func _test_gather_food_completion_creates_food_item() -> bool:
-    var sim: Simulation = Simulation.new()
+    var sim = SimulationScript.new()
     sim.initialize_new_game(8)
-    var target := Vector2i(3, 2)
+    var target = Vector2i(3, 2)
     _place_resource(sim, "resource_berry_test", "berry", target, {"seed": 2})
 
     sim.queue_command(1, "player_001", "DESIGNATE_GATHER_FOOD", target, {"priority": 4})
@@ -62,12 +62,12 @@ func _test_gather_food_completion_creates_food_item() -> bool:
     return ok
 
 func _test_repeated_chop_completion_cannot_create_wood_from_depleted_tree() -> bool:
-    var sim: Simulation = Simulation.new()
+    var sim = SimulationScript.new()
     sim.initialize_new_game(9)
-    var target := Vector2i(3, 3)
+    var target = Vector2i(3, 3)
     _place_resource(sim, "resource_tree_test", "tree", target)
-    sim.job_board.add_job(SimJob.new("job_repeat_a", "CHOP_TREE", target, 10))
-    sim.job_board.add_job(SimJob.new("job_repeat_b", "CHOP_TREE", target, 9))
+    sim.job_board.add_job(SimJobScript.new("job_repeat_a", "CHOP_TREE", target, 10))
+    sim.job_board.add_job(SimJobScript.new("job_repeat_b", "CHOP_TREE", target, 9))
 
     _step_until_jobs_complete(sim)
 

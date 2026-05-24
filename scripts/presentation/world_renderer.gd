@@ -8,11 +8,14 @@ const UnitViewScene := preload("res://scenes/units/UnitView.tscn")
 @onready var terrain_root: Node3D = $Terrain
 @onready var resources_root: Node3D = $Resources
 @onready var items_root: Node3D = get_node_or_null("Items") as Node3D
+@onready var designations_root: Node3D = get_node_or_null("Designations") as Node3D
 @onready var units_root: Node3D = $Units
 @onready var debug_labels_root: Node3D = $DebugLabels
 
 var tile_size: float = 1.0
 @export var show_debug_labels: bool = true
+
+const INVALID_CELL := Vector2i(-1, -1)
 
 func _ready() -> void:
     pass
@@ -23,7 +26,25 @@ func sync_from_simulation(simulation: Simulation) -> void:
     _sync_terrain(snapshot)
     _sync_resources(snapshot)
     _sync_items(snapshot)
+    _sync_designations(snapshot)
     _sync_units(snapshot)
+
+func world_position_to_cell(world_position: Vector3, grid_world) -> Vector2i:
+    if grid_world == null or tile_size <= 0.0:
+        return INVALID_CELL
+    var cell := Vector2i(int(floor(world_position.x / tile_size)), int(floor(world_position.z / tile_size)))
+    if not grid_world.in_bounds(cell):
+        return INVALID_CELL
+    return cell
+
+func ray_to_grid_cell(ray_origin: Vector3, ray_direction: Vector3, grid_world) -> Vector2i:
+    if absf(ray_direction.y) < 0.00001:
+        return INVALID_CELL
+    var distance_to_plane: float = -ray_origin.y / ray_direction.y
+    if distance_to_plane < 0.0:
+        return INVALID_CELL
+    var hit_position: Vector3 = ray_origin + (ray_direction * distance_to_plane)
+    return world_position_to_cell(hit_position, grid_world)
 
 func _resolve_child_roots() -> void:
     # Headless tests can instantiate Main.tscn and call sync_from_simulation()
@@ -38,6 +59,12 @@ func _resolve_child_roots() -> void:
         items_root = Node3D.new()
         items_root.name = "Items"
         add_child(items_root)
+    if designations_root == null:
+        designations_root = get_node_or_null("Designations") as Node3D
+    if designations_root == null:
+        designations_root = Node3D.new()
+        designations_root.name = "Designations"
+        add_child(designations_root)
     if units_root == null:
         units_root = get_node_or_null("Units") as Node3D
     if debug_labels_root == null:
@@ -107,6 +134,31 @@ func _sync_items(snapshot: Dictionary) -> void:
         node.material_override = _make_material(_item_color(str(item.get("item_type", "item"))))
         node.visible = item.get("holder_unit_id", "") == ""
     _remove_unseen_children(items_root, seen)
+
+func _sync_designations(snapshot: Dictionary) -> void:
+    if designations_root == null:
+        return
+    var seen: Dictionary = {}
+    for job in snapshot["jobs"]:
+        if not _job_has_visible_designation(job):
+            continue
+        var node_name: String = "Designation_" + str(job["id"])
+        seen[node_name] = true
+        var node: MeshInstance3D = designations_root.get_node_or_null(node_name) as MeshInstance3D
+        if node == null:
+            node = MeshInstance3D.new()
+            node.name = node_name
+            node.mesh = BoxMesh.new()
+            designations_root.add_child(node)
+        var mesh: BoxMesh = node.mesh as BoxMesh
+        if mesh == null:
+            mesh = BoxMesh.new()
+            node.mesh = mesh
+        mesh.size = Vector3(0.82, 0.06, 0.82)
+        node.position = Vector3(job["target_cell"][0] * tile_size, 0.08, job["target_cell"][1] * tile_size)
+        node.material_override = _make_designation_material(_designation_color(str(job["type"])))
+        node.visible = true
+    _remove_unseen_children(designations_root, seen)
 
 func _sync_units(snapshot: Dictionary) -> void:
     if units_root == null:
@@ -188,6 +240,25 @@ func _item_color(item_type: String) -> Color:
         "food", "berry":
             return Color(0.8, 0.15, 0.18)
     return Color(0.75, 0.65, 0.35)
+
+func _job_has_visible_designation(job: Dictionary) -> bool:
+    return str(job.get("status", "")) in ["open", "claimed", "in_progress"]
+
+func _designation_color(job_type: String) -> Color:
+    match job_type:
+        "CHOP_TREE":
+            return Color(0.1, 0.85, 0.25, 0.62)
+        "GATHER_STONE":
+            return Color(0.65, 0.75, 0.95, 0.62)
+        "GATHER_FOOD":
+            return Color(0.95, 0.18, 0.25, 0.62)
+    return Color(1.0, 0.85, 0.15, 0.62)
+
+func _make_designation_material(color: Color) -> StandardMaterial3D:
+    var material: StandardMaterial3D = _make_material(color)
+    material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    return material
 
 func _sync_debug_label(text: String, label_position: Vector3, stable_id: String, label_visible: bool = true) -> void:
     if not show_debug_labels or debug_labels_root == null:

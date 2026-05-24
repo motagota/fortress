@@ -6,12 +6,70 @@
 script = ExtResource("1_game_hud")
 
 [node name="Panel" type="Panel" parent="."]
-offsets/right = 560.0
-offsets/bottom = 48.0
+offset_left = 0.0
+offset_top = 0.0
+offset_right = 760.0
+offset_bottom = 104.0
 
 [node name="StatusLabel" type="Label" parent="Panel"]
-offsets/left = 12.0
-offsets/top = 10.0
-offsets/right = 548.0
-offsets/bottom = 38.0
-text = "Fortress City"
+offset_left = 60.0
+offset_top = 72.0
+offset_right = 748.0
+offset_bottom = 96.0
+text = "Tick 0 | Speed 1x | Tool Inspect"
+
+[node name="PauseButton" type="Button" parent="Panel"]
+offset_left = 12.0
+offset_top = 6.0
+offset_right = 92.0
+offset_bottom = 30.0
+text = "Pause"
+
+[node name="Speed1x" type="Button" parent="Panel"]
+offset_left = 98.0
+offset_top = 6.0
+offset_right = 158.0
+offset_bottom = 30.0
+text = "1x"
+
+[node name="Speed2x" type="Button" parent="Panel"]
+offset_left = 162.0
+offset_top = 6.0
+offset_right = 222.0
+offset_bottom = 30.0
+text = "2x"
+
+[node name="Speed4x" type="Button" parent="Panel"]
+offset_left = 226.0
+offset_top = 6.0
+offset_right = 286.0
+offset_bottom = 30.0
+text = "4x"
+
+[node name="InspectButton" type="Button" parent="Panel"]
+offset_left = 12.0
+offset_top = 40.0
+offset_right = 92.0
+offset_bottom = 64.0
+text = "1 Inspect"
+
+[node name="GatherWoodButton" type="Button" parent="Panel"]
+offset_left = 98.0
+offset_top = 40.0
+offset_right = 202.0
+offset_bottom = 64.0
+text = "2 Chop Wood"
+
+[node name="GatherStoneButton" type="Button" parent="Panel"]
+offset_left = 208.0
+offset_top = 40.0
+offset_right = 328.0
+offset_bottom = 64.0
+text = "3 Gather Stone"
+
+[node name="GatherFoodButton" type="Button" parent="Panel"]
+offset_left = 334.0
+offset_top = 40.0
+offset_right = 448.0
+offset_bottom = 64.0
+text = "4 Gather Food"

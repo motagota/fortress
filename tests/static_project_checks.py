@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_FILES = [
+    'run_tests.sh',
     'project.godot',
     'scenes/Main.tscn',
     'scenes/world/WorldRoot.tscn',
@@ -22,6 +23,9 @@ REQUIRED_FILES = [
     'scripts/simulation/job.gd',
     'scripts/simulation/job_board.gd',
     'scripts/simulation/item.gd',
+    'scripts/simulation/stockpile.gd',
+    'scripts/simulation/building_definition.gd',
+    'scripts/simulation/construction_record.gd',
     'scripts/presentation/world_renderer.gd',
     'scripts/presentation/camera_controller.gd',
     'scripts/ui/game_hud.gd',
@@ -32,6 +36,15 @@ REQUIRED_FILES = [
     'tests/test_forest_fixture.gd',
     'tests/test_seeded_rng.gd',
     'tests/test_world_shell.gd',
+    'tests/test_job_board.gd',
+    'tests/test_job_timers.gd',
+    'tests/test_resource_job_completion.gd',
+    'tests/test_unit_job_lifecycle.gd',
+    'tests/test_tool_modes.gd',
+    'tests/test_grid_picking_designations.gd',
+    'tests/test_stockpile_model.gd',
+    'tests/test_hauling_jobs.gd',
+    'tests/test_building_model.gd',
 ]
 
 SIM_REQUIRED_SNIPPETS = [
@@ -88,6 +101,8 @@ def main() -> int:
         fail('project.godot must set scenes/Main.tscn as main scene')
     if 'config/features=PackedStringArray("4.6"' not in project:
         fail('project.godot must carry a Godot 4.6 feature marker')
+    if 'display/window/size/mode=3' not in project:
+        fail('project.godot must start the game in fullscreen window mode')
 
     main_scene = read('scenes/Main.tscn')
     for token in ['type="Node3D"', 'name="WorldRoot"', 'type="Camera3D"', 'type="DirectionalLight3D"', 'name="GameHud"']:
@@ -107,10 +122,39 @@ def main() -> int:
     assert_contains('scripts/simulation/grid_world.gd', 'func create_forest')
     assert_contains('scripts/simulation/job_board.gd', 'func get_best_open_job_for_unit')
     assert_contains('scripts/presentation/world_renderer.gd', 'func sync_from_simulation')
+    assert_contains('scripts/presentation/world_renderer.gd', 'func _sync_designations')
+    assert_contains('scripts/presentation/world_renderer.gd', 'Designations')
     assert_contains('scripts/presentation/world_renderer.gd', 'simulation state')
     assert_contains('tests/run_godot_tests.gd', 'test_determinism_replay.gd')
     assert_contains('tests/run_godot_tests.gd', 'test_forest_fixture.gd')
+    assert_contains('tests/run_godot_tests.gd', 'test_tool_modes.gd')
+    assert_contains('tests/run_godot_tests.gd', 'test_grid_picking_designations.gd')
+    assert_contains('tests/run_godot_tests.gd', 'test_stockpile_model.gd')
+    assert_contains('tests/run_godot_tests.gd', 'test_hauling_jobs.gd')
+    assert_contains('tests/run_godot_tests.gd', 'test_building_model.gd')
+    assert_contains('scripts/simulation/stockpile.gd', 'func accepts_item_type')
+    assert_contains('scripts/simulation/simulation.gd', 'func create_stockpile')
+    assert_contains('scripts/simulation/simulation.gd', 'func reserve_item_for_job')
+    assert_contains('scripts/simulation/simulation.gd', 'func create_haul_jobs_for_loose_items')
+    assert_contains('scripts/simulation/simulation.gd', 'func get_building_definition')
+    assert_contains('scripts/simulation/simulation.gd', 'func create_construction')
+    assert_contains('scripts/simulation/building_definition.gd', 'wall_block')
+    assert_contains('scripts/simulation/construction_record.gd', 'completed_building_id')
+    assert_contains('scripts/simulation/job.gd', '"HAUL_ITEM"')
     assert_contains('tests/test_world_shell.gd', 'UnitView')
+    assert_contains('scripts/main.gd', 'func set_active_tool_mode')
+    assert_contains('scripts/main.gd', 'func _handle_grid_cell_designation')
+    assert_contains('scripts/presentation/world_renderer.gd', 'func ray_to_grid_cell')
+    assert_contains('scripts/simulation/simulation.gd', 'func validate_designation_target')
+    assert_contains('scripts/simulation/simulation.gd', 'has_open_job_at')
+    assert_contains('scripts/ui/game_hud.gd', 'signal tool_mode_requested')
+
+    runner = read('run_tests.sh')
+    if '/mnt/d/dev/fortress' in runner:
+        fail('run_tests.sh must not hard-code the Windows checkout as /mnt/d/dev/fortress')
+    for snippet in ['BASH_SOURCE[0]', 'PROJECT_ROOT', 'GODOT', '/d/dev/godot', 'command -v godot', '/tmp/Godot_v4.6-stable_linux.x86_64']:
+        if snippet not in runner:
+            fail(f'run_tests.sh missing portable runner snippet {snippet!r}')
 
     print('static project checks passed')
     return 0

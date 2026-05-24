@@ -1,6 +1,6 @@
 extends RefCounted
 
-const SimJob := preload("res://scripts/simulation/job.gd")
+const SimJobScript = preload("res://scripts/simulation/job.gd")
 
 func _assert(cond: bool, message: String) -> bool:
     if not cond:
@@ -14,7 +14,7 @@ func run() -> bool:
     return ok
 
 func _test_claimed_job_advances_tick_by_tick_until_work_reaches_zero() -> bool:
-    var job: SimJob = SimJob.new("job_001", "GATHER_FOOD", Vector2i.ZERO, 1)
+    var job = SimJobScript.new("job_001", "GATHER_FOOD", Vector2i.ZERO, 1)
     job.status = "claimed"
     job.claimed_by_unit_id = "unit_001"
 

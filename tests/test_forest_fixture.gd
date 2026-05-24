@@ -1,6 +1,6 @@
 extends RefCounted
 
-const Simulation := preload("res://scripts/simulation/simulation.gd")
+const SimulationScript = preload("res://scripts/simulation/simulation.gd")
 
 func _assert(cond: bool, message: String) -> bool:
     if not cond:
@@ -8,7 +8,7 @@ func _assert(cond: bool, message: String) -> bool:
         return false
     return true
 
-func _first_tree_position(sim: Simulation) -> Vector2i:
+func _first_tree_position(sim) -> Vector2i:
     var ids: Array = sim.resources.keys()
     ids.sort()
     for id in ids:
@@ -18,8 +18,8 @@ func _first_tree_position(sim: Simulation) -> Vector2i:
             return Vector2i(int(pos[0]), int(pos[1]))
     return Vector2i(-1, -1)
 
-func _count_items_of_type(sim: Simulation, item_type: String) -> int:
-    var total := 0
+func _count_items_of_type(sim, item_type: String) -> int:
+    var total = 0
     for id in sim.items.keys():
         var item = sim.items[id]
         if item.item_type == item_type:
@@ -27,7 +27,7 @@ func _count_items_of_type(sim: Simulation, item_type: String) -> int:
     return total
 
 func test_initial_forest_fixture_shape() -> bool:
-    var sim: Simulation = Simulation.new()
+    var sim = SimulationScript.new()
     sim.initialize_new_game(4242)
 
     if not _assert(sim.world.width == 16 and sim.world.height == 16, "forest fixture must use a 16x16 grid"):
@@ -48,9 +48,9 @@ func test_initial_forest_fixture_shape() -> bool:
     return true
 
 func test_chop_designation_creates_job_and_produces_wood() -> bool:
-    var sim: Simulation = Simulation.new()
+    var sim = SimulationScript.new()
     sim.initialize_new_game(4242)
-    var tree_pos := _first_tree_position(sim)
+    var tree_pos = _first_tree_position(sim)
     if not _assert(tree_pos != Vector2i(-1, -1), "seeded forest must provide at least one tree target"):
         return false
 
@@ -75,13 +75,13 @@ func test_chop_designation_creates_job_and_produces_wood() -> bool:
     return true
 
 func test_seeded_chop_replay_is_deterministic() -> bool:
-    var a: Simulation = Simulation.new()
-    var b: Simulation = Simulation.new()
+    var a = SimulationScript.new()
+    var b = SimulationScript.new()
     a.initialize_new_game(4242)
     b.initialize_new_game(4242)
 
-    var tree_pos := _first_tree_position(a)
-    var cmd := a.make_command(1, "player_001", "DESIGNATE_CHOP", tree_pos, {"priority": 3}, "cmd_chop_tree")
+    var tree_pos = _first_tree_position(a)
+    var cmd: Dictionary = a.make_command(1, "player_001", "DESIGNATE_CHOP", tree_pos, {"priority": 3}, "cmd_chop_tree")
     a.queue_existing_command(cmd)
     b.queue_existing_command(cmd.duplicate(true))
     for i in range(40):

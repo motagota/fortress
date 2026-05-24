@@ -1,6 +1,6 @@
 extends RefCounted
 
-const Simulation := preload("res://scripts/simulation/simulation.gd")
+const SimulationScript = preload("res://scripts/simulation/simulation.gd")
 
 func _assert(cond: bool, message: String) -> bool:
     if not cond:
@@ -9,9 +9,9 @@ func _assert(cond: bool, message: String) -> bool:
     return true
 
 func run() -> bool:
-    var a: Simulation = Simulation.new()
-    var b: Simulation = Simulation.new()
-    var c: Simulation = Simulation.new()
+    var a = SimulationScript.new()
+    var b = SimulationScript.new()
+    var c = SimulationScript.new()
     a.initialize_new_game(111)
     b.initialize_new_game(111)
     c.initialize_new_game(222)

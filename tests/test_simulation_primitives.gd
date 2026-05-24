@@ -1,7 +1,7 @@
 extends RefCounted
 
-const Simulation := preload("res://scripts/simulation/simulation.gd")
-const SimClock := preload("res://scripts/simulation/sim_clock.gd")
+const SimulationScript = preload("res://scripts/simulation/simulation.gd")
+const SimClockScript = preload("res://scripts/simulation/sim_clock.gd")
 
 func _assert(cond: bool, message: String) -> bool:
     if not cond:
@@ -18,7 +18,7 @@ func run() -> bool:
     return ok
 
 func _test_fixed_tick_clock() -> bool:
-    var clock: SimClock = SimClock.new()
+    var clock = SimClockScript.new()
     clock.set_speed(3)
     var advanced: int = clock.advance_steps()
     var ok: bool = true
@@ -33,7 +33,7 @@ func _test_fixed_tick_clock() -> bool:
     return ok
 
 func _test_monotonic_id_allocator_resets_from_seed_state() -> bool:
-    var sim: Simulation = Simulation.new()
+    var sim = SimulationScript.new()
     sim.initialize_new_game(99)
     var first_job: String = sim.allocate_id("job")
     var second_job: String = sim.allocate_id("job")
@@ -47,8 +47,8 @@ func _test_monotonic_id_allocator_resets_from_seed_state() -> bool:
     return ok
 
 func _test_command_queue_has_total_canonical_order() -> bool:
-    var a: Simulation = Simulation.new()
-    var b: Simulation = Simulation.new()
+    var a = SimulationScript.new()
+    var b = SimulationScript.new()
     a.initialize_new_game(12)
     b.initialize_new_game(12)
     var first: Dictionary = a.make_command(5, "player_b", "DESIGNATE_GATHER_STONE", Vector2i(4, 4), {"z": 2, "a": 1}, "cmd_same")
@@ -62,7 +62,7 @@ func _test_command_queue_has_total_canonical_order() -> bool:
     return _assert(a_queue == b_queue, "command queue must have a total canonical order even when external command ids collide")
 
 func _test_canonical_snapshot_is_hash_source() -> bool:
-    var sim: Simulation = Simulation.new()
+    var sim = SimulationScript.new()
     sim.initialize_new_game(321)
     var snapshot: Dictionary = sim.canonical_snapshot()
     var expected_hash: String = JSON.stringify(snapshot).sha256_text()
