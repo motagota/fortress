@@ -29,12 +29,12 @@ JobBoard="*res://scripts/simulation/job_board.gd"
 
 [display]
 
-display/window/size/always_on_top=false
-display/window/size/borderless=true
+display/window/size/viewport_width=1280
+display/window/size/viewport_height=720
 display/window/size/mode=2
 display/window/stretch/mode="viewport"
-display/window/stretch/aspect="ignore"
-display/window/stretch/scale_mode="integer"
+display/window/stretch/aspect="expand"
+display/window/stretch/scale_mode="ignored"
 
 [rendering]
 
