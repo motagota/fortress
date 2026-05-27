@@ -41,7 +41,7 @@ func _test_gather_stone_completion_creates_stone_item() -> bool:
     ok = _assert(_count_items_of_type(sim, "ore") == 0, "gather-stone completion should not use arbitrary resource yield data instead of the job output") and ok
     ok = _assert(not sim.resources.has("resource_stone_test"), "completed gather-stone job must deplete its source resource") and ok
     ok = _assert(sim.world.get_cell(target).resource_id == "", "completed gather-stone job must clear depleted resource from its cell") and ok
-    ok = _assert(sim.job_board.jobs["job_000001"].status == "complete", "completed gather-stone job must remain auditable") and ok
+    ok = _assert(not sim.job_board.jobs.has("job_000001"), "completed gather-stone job must be removed from the live job board") and ok
     return ok
 
 func _test_gather_food_completion_creates_food_item() -> bool:
@@ -58,7 +58,7 @@ func _test_gather_food_completion_creates_food_item() -> bool:
     ok = _assert(_count_items_of_type(sim, "seed") == 0, "gather-food completion should not use arbitrary resource yield data instead of the job output") and ok
     ok = _assert(not sim.resources.has("resource_berry_test"), "completed gather-food job must deplete its source resource") and ok
     ok = _assert(sim.world.get_cell(target).resource_id == "", "completed gather-food job must clear depleted resource from its cell") and ok
-    ok = _assert(sim.job_board.jobs["job_000001"].status == "complete", "completed gather-food job must remain auditable") and ok
+    ok = _assert(not sim.job_board.jobs.has("job_000001"), "completed gather-food job must be removed from the live job board") and ok
     return ok
 
 func _test_repeated_chop_completion_cannot_create_wood_from_depleted_tree() -> bool:
@@ -75,8 +75,8 @@ func _test_repeated_chop_completion_cannot_create_wood_from_depleted_tree() -> b
     ok = _assert(_count_items_of_type(sim, "wood") == 1, "only the first chop completion should produce wood from a tree") and ok
     ok = _assert(not sim.resources.has("resource_tree_test"), "completed chop job must remove depleted tree from resource index") and ok
     ok = _assert(sim.world.get_cell(target).resource_id == "", "completed chop job must clear depleted tree from its cell") and ok
-    ok = _assert(sim.job_board.jobs["job_repeat_a"].status == "complete", "first repeated chop job should complete") and ok
-    ok = _assert(sim.job_board.jobs["job_repeat_b"].status == "complete", "second repeated chop job should complete without producing duplicate wood") and ok
+    ok = _assert(not sim.job_board.jobs.has("job_repeat_a"), "first repeated chop job should be removed after completion") and ok
+    ok = _assert(not sim.job_board.jobs.has("job_repeat_b"), "second repeated chop job should be removed after completion without producing duplicate wood") and ok
     return ok
 
 func run() -> bool:

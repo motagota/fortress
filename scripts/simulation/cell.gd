@@ -7,12 +7,14 @@ var terrain: String = "grass"
 var walkable: bool = true
 var resource_id: String = ""
 var building_id: String = ""
+var depth: int = 0
 
-func _init(px: int = 0, pz: int = 0, pterrain: String = "grass", pwalkable: bool = true) -> void:
+func _init(px: int = 0, pz: int = 0, pterrain: String = "grass", pwalkable: bool = true, pdepth: int = 0) -> void:
     x = px
     z = pz
     terrain = pterrain
     walkable = pwalkable
+    depth = pdepth
 
 func to_canonical_dict() -> Dictionary:
     return {
@@ -22,4 +24,5 @@ func to_canonical_dict() -> Dictionary:
         "walkable": walkable,
         "resource_id": resource_id,
         "building_id": building_id,
+        "depth": depth,
     }

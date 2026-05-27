@@ -8,6 +8,9 @@ func _assert(cond: bool, message: String) -> bool:
         return false
     return true
 
+const LAYER_VERTICAL_SPACING := 1.0
+const TERRAIN_THICKNESS := 1.0
+
 func run() -> bool:
     # Main scene uses global class_name "Simulation" which may not be
     # registered in headless test mode. Skip gracefully.
@@ -32,7 +35,13 @@ func run() -> bool:
     var designations: Node = scene.get_node("WorldRoot/Designations")
     var units: Node = scene.get_node("WorldRoot/Units")
     var labels: Node = scene.get_node("WorldRoot/DebugLabels")
-    ok = _assert(terrain.get_child_count() == 256, "visual shell must draw a flat 16x16 terrain grid from sim world cells") and ok
+    ok = _assert(terrain.get_child_count() == 256, "visual shell must draw a 16x16 terrain grid from sim world cells") and ok
+    var surface_tile: Node3D = terrain.get_node_or_null("Tile_00_00") as Node3D
+    var deep_tile: Node3D = terrain.get_node_or_null("Tile_00_13") as Node3D
+    ok = _assert(surface_tile != null and deep_tile != null, "terrain should expose stable tile nodes for surface and deep layers") and ok
+    if surface_tile != null and deep_tile != null:
+        ok = _assert(deep_tile.position.y < surface_tile.position.y, "deeper generated layers should render lower than surface terrain") and ok
+        ok = _assert(absf(deep_tile.position.z - surface_tile.position.z) < 0.001, "first row of each generated layer should render directly below the surface row") and ok
     ok = _assert(resources.get_child_count() == sim.canonical_snapshot()["resources"].size(), "visual shell must draw one blockout resource per sim resource") and ok
     ok = _assert(designations != null, "WorldRoot must provide a Designations container for pending job markers") and ok
     var tree_resource_id: String = ""
@@ -114,7 +123,8 @@ func _test_new_items_are_rendered(scene: Node, sim) -> bool:
         var item_node: Node = items_root.get_node_or_null("Item_" + item_data["id"])
         ok = _assert(item_node != null, "item visuals must use stable names Item_<item id>; missing Item_" + item_data["id"]) and ok
         if item_node is Node3D:
-            var expected_position = Vector3(item_data["position"][0], 0.18, item_data["position"][1])
+            var item_cell := Vector2i(int(item_data["position"][0]), int(item_data["position"][1]))
+            var expected_position = Vector3(item_cell.x, _surface_y_for_sim_cell(sim, item_cell) + 0.18, _render_z_for_sim_cell(sim, item_cell))
             ok = _assert(_approx_vec3((item_node as Node3D).position, expected_position), "item visual must be positioned at its simulation cell for " + item_data["id"]) and ok
     return ok
 
@@ -128,7 +138,8 @@ func _test_units_stay_synced_after_ticks(scene: Node, sim) -> bool:
         var unit_node: Node = units_root.get_node_or_null("UnitView_" + unit_data["id"])
         ok = _assert(unit_node != null, "unit visuals must keep stable names after ticks; missing UnitView_" + unit_data["id"]) and ok
         if unit_node is Node3D:
-            var expected_position = Vector3(unit_data["position"][0], 0.42, unit_data["position"][1])
+            var unit_cell := Vector2i(int(unit_data["position"][0]), int(unit_data["position"][1]))
+            var expected_position = Vector3(unit_cell.x, _surface_y_for_sim_cell(sim, unit_cell) + 0.42, _render_z_for_sim_cell(sim, unit_cell))
             ok = _assert(_approx_vec3((unit_node as Node3D).position, expected_position), "unit visual position must match simulation position for " + unit_data["id"]) and ok
             var label: Label3D = unit_node.get_node_or_null("Label3D") as Label3D
             ok = _assert(label != null, "unit visual must expose a Label3D for status text after ticks") and ok
@@ -183,6 +194,24 @@ func _find_resource_visual_at(resources_root: Node, position: Array) -> Node:
             if absf(child_position.x - expected_x) < 0.001 and absf(child_position.z - expected_z) < 0.001:
                 return child
     return null
+
+func _surface_y_for_sim_cell(sim, cell: Vector2i) -> float:
+    var sim_cell = sim.world.get_cell(cell)
+    if sim_cell == null:
+        return 0.0
+    return float(sim_cell.depth) * LAYER_VERTICAL_SPACING
+
+func _render_z_for_sim_cell(sim, cell: Vector2i) -> float:
+    var sim_cell = sim.world.get_cell(cell)
+    if sim_cell == null:
+        return float(cell.y)
+    var first_row: int = cell.y
+    for z in range(sim.world.height):
+        var layer_cell = sim.world.get_cell(Vector2i(cell.x, z))
+        if layer_cell != null and int(layer_cell.depth) == int(sim_cell.depth):
+            first_row = z
+            break
+    return float(cell.y - first_row)
 
 func _approx_vec3(actual: Vector3, expected: Vector3) -> bool:
     return actual.distance_to(expected) < 0.001

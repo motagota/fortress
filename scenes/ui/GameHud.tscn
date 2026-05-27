@@ -8,14 +8,14 @@ script = ExtResource("1_game_hud")
 [node name="Panel" type="Panel" parent="."]
 offset_left = 0.0
 offset_top = 0.0
-offset_right = 760.0
-offset_bottom = 104.0
+offset_right = 920.0
+offset_bottom = 166.0
 
 [node name="StatusLabel" type="Label" parent="Panel"]
-offset_left = 60.0
-offset_top = 72.0
-offset_right = 748.0
-offset_bottom = 96.0
+offset_left = 12.0
+offset_top = 134.0
+offset_right = 908.0
+offset_bottom = 158.0
 text = "Tick 0 | Speed 1x | Tool Inspect"
 
 [node name="PauseButton" type="Button" parent="Panel"]
@@ -77,6 +77,128 @@ text = "4 Gather Food"
 [node name="StockpileButton" type="Button" parent="Panel"]
 offset_left = 454.0
 offset_top = 40.0
-offset_right = 548.0
+offset_right = 542.0
 offset_bottom = 64.0
-text = "5 Stockpile"
+text = "6 Stockpile"
+
+[node name="MineButton" type="Button" parent="Panel"]
+offset_left = 548.0
+offset_top = 40.0
+offset_right = 626.0
+offset_bottom = 64.0
+text = "5 Mine"
+
+[node name="StorageOnlyButton" type="Button" parent="Panel"]
+offset_left = 632.0
+offset_top = 40.0
+offset_right = 740.0
+offset_bottom = 64.0
+disabled = true
+toggle_mode = true
+text = "Storage"
+
+[node name="SupplyOnlyButton" type="Button" parent="Panel"]
+offset_left = 746.0
+offset_top = 40.0
+offset_right = 846.0
+offset_bottom = 64.0
+disabled = true
+toggle_mode = true
+text = "Supply"
+
+[node name="BothModeButton" type="Button" parent="Panel"]
+offset_left = 852.0
+offset_top = 40.0
+offset_right = 914.0
+offset_bottom = 64.0
+disabled = true
+toggle_mode = true
+text = "Both"
+
+[node name="KitchenButton" type="Button" parent="Panel"]
+offset_left = 12.0
+offset_top = 74.0
+offset_right = 112.0
+offset_bottom = 98.0
+text = "7 Kitchen"
+
+[node name="CookMealButton" type="Button" parent="Panel"]
+offset_left = 118.0
+offset_top = 74.0
+offset_right = 226.0
+offset_bottom = 98.0
+disabled = true
+text = "Cook Meal"
+
+[node name="LayerUpButton" type="Button" parent="Panel"]
+offset_left = 242.0
+offset_top = 74.0
+offset_right = 292.0
+offset_bottom = 98.0
+disabled = true
+text = "Q Up"
+
+[node name="LayerDownButton" type="Button" parent="Panel"]
+offset_left = 298.0
+offset_top = 74.0
+offset_right = 366.0
+offset_bottom = 98.0
+text = "E Down"
+
+[node name="LayerLabel" type="Label" parent="Panel"]
+offset_left = 374.0
+offset_top = 78.0
+offset_right = 460.0
+offset_bottom = 98.0
+text = "Layer 1"
+
+[node name="JobsPanel" type="Panel" parent="."]
+visible = false
+offset_left = 920.0
+offset_top = 0.0
+offset_right = 1272.0
+offset_bottom = 420.0
+
+[node name="JobsHeaderLabel" type="Label" parent="JobsPanel"]
+offset_left = 12.0
+offset_top = 10.0
+offset_right = 340.0
+offset_bottom = 34.0
+text = "Jobs"
+
+[node name="JobsListLabel" type="Label" parent="JobsPanel"]
+offset_left = 12.0
+offset_top = 42.0
+offset_right = 340.0
+offset_bottom = 408.0
+text = "No jobs"
+autowrap_mode = 3
+
+[node name="WorkersPanel" type="Panel" parent="."]
+visible = false
+offset_left = 920.0
+offset_top = 430.0
+offset_right = 1272.0
+offset_bottom = 760.0
+
+[node name="WorkersHeaderLabel" type="Label" parent="WorkersPanel"]
+offset_left = 12.0
+offset_top = 10.0
+offset_right = 340.0
+offset_bottom = 34.0
+text = "Workers"
+
+[node name="WorkersList" type="ItemList" parent="WorkersPanel"]
+offset_left = 12.0
+offset_top = 42.0
+offset_right = 340.0
+offset_bottom = 176.0
+auto_height = true
+
+[node name="WorkerDetailLabel" type="Label" parent="WorkersPanel"]
+offset_left = 12.0
+offset_top = 188.0
+offset_right = 340.0
+offset_bottom = 318.0
+text = "Select a worker"
+autowrap_mode = 3

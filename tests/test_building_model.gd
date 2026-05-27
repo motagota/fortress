@@ -26,6 +26,10 @@ func run() -> bool:
     ok = _test_completed_wall_consumes_stockpiled_stone_once() and ok
     ok = _test_completed_wall_blocks_target_cell() and ok
     ok = _test_completed_blueprint_cannot_complete_twice() and ok
+    ok = _test_kitchen_requires_clear_3x3_area() and ok
+    ok = _test_kitchen_build_job_waits_for_three_wood() and ok
+    ok = _test_completed_kitchen_occupies_3x3_workshop_area() and ok
+    ok = _test_kitchen_cook_order_consumes_two_food_and_produces_meal() and ok
     return ok
 
 func _add_stockpiled_item(sim, item_id: String, item_type: String, quantity: int, cell: Vector2i, stockpile_id: String) -> void:
@@ -40,6 +44,21 @@ func _build_jobs(sim) -> Array:
         if job.type == "BUILD_CONSTRUCTION":
             jobs.append(job)
     return jobs
+
+func _jobs_of_type(sim, job_type: String) -> Array:
+    var jobs: Array = []
+    for job_id in sim.job_board.sorted_job_ids():
+        var job = sim.job_board.jobs[job_id]
+        if job.type == job_type:
+            jobs.append(job)
+    return jobs
+
+func _count_items_of_type(sim, item_type: String) -> int:
+    var total: int = 0
+    for item_id in sim.items.keys():
+        if sim.items[item_id].item_type == item_type:
+            total += int(sim.items[item_id].quantity)
+    return total
 
 func _run_ticks(sim, count: int) -> void:
     for i in range(count):
@@ -234,11 +253,10 @@ func _test_worker_completes_reserved_wall_construction() -> bool:
     _run_ticks(sim, 20)
 
     var construction = sim.constructions[construction_id]
-    var job = sim.job_board.jobs[construction.build_job_id]
     var ok: bool = true
     ok = _assert(construction.status == "complete", "worker should complete reserved wall construction") and ok
     ok = _assert(construction.completed_building_id == "building_000001", "completed construction should allocate deterministic building id") and ok
-    ok = _assert(job.status == "complete", "build job should be complete after worker finishes construction") and ok
+    ok = _assert(not sim.job_board.jobs.has(construction.build_job_id), "completed build job should be removed from the live job board") and ok
     ok = _assert(sim.world.get_cell(Vector2i(2, 2)).building_id == construction.completed_building_id, "completed wall should exist on the target cell") and ok
     return ok
 
@@ -284,15 +302,100 @@ func _test_completed_blueprint_cannot_complete_twice() -> bool:
 
     _run_ticks(sim, 20)
     var construction = sim.constructions[construction_id]
-    var job = sim.job_board.jobs[construction.build_job_id]
-    var unit = sim.units[job.claimed_by_unit_id]
     var first_building_id: String = construction.completed_building_id
     var item_count_after_first_completion: int = sim.items.size()
-    sim._complete_job(unit, job)
+    _run_ticks(sim, 5)
 
     var ok: bool = true
     ok = _assert(construction.status == "complete", "construction should remain complete after duplicate completion attempt") and ok
     ok = _assert(construction.completed_building_id == first_building_id, "duplicate completion must not allocate a second building id") and ok
     ok = _assert(int(sim.id_counters.get("building", 0)) == 1, "duplicate completion must not advance building id counter") and ok
     ok = _assert(sim.items.size() == item_count_after_first_completion, "duplicate completion must not consume resources twice") and ok
+    ok = _assert(_build_jobs(sim).size() == 0, "completed construction should not leave a live build job") and ok
+    return ok
+
+func _test_kitchen_requires_clear_3x3_area() -> bool:
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(56)
+
+    var definition: Dictionary = sim.get_building_definition("kitchen")
+    var valid: Dictionary = sim.validate_blueprint_target("kitchen", Vector2i(1, 1))
+    sim.resources["resource_blocking_berry"] = {"id": "resource_blocking_berry", "type": "berry", "position": [0, 0], "yield": {"food": 1}}
+    sim.world.set_resource(Vector2i(0, 0), "resource_blocking_berry")
+    var blocked: Dictionary = sim.validate_blueprint_target("kitchen", Vector2i(1, 1))
+    var edge: Dictionary = sim.validate_blueprint_target("kitchen", Vector2i(0, 0))
+
+    var ok: bool = true
+    ok = _assert(definition.get("footprint", []) == [3, 3], "kitchen should declare a 3x3 workshop footprint") and ok
+    ok = _assert(definition.get("required_items", {}).get("wood", 0) == 3, "kitchen should require three wood to build") and ok
+    ok = _assert(bool(definition.get("workshop", false)), "kitchen should be marked as a workshop") and ok
+    ok = _assert(bool(valid.get("valid", false)), "kitchen should be placeable when all 3x3 cells are clear") and ok
+    ok = _assert(not bool(blocked.get("valid", true)) and str(blocked.get("warning", "")).contains("resource"), "kitchen should reject resources anywhere in the 3x3 area") and ok
+    ok = _assert(not bool(edge.get("valid", true)) and str(edge.get("warning", "")).contains("out of bounds"), "kitchen footprint should reject out-of-bounds 3x3 placement") and ok
+    return ok
+
+func _test_kitchen_build_job_waits_for_three_wood() -> bool:
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(59)
+    var stockpile_id: String = sim.create_stockpile([Vector2i(4, 4)], ["wood"])
+    _add_stockpiled_item(sim, "item_wood_short", "wood", 2, Vector2i(4, 4), stockpile_id)
+
+    var result: Dictionary = sim.create_construction("kitchen", Vector2i(1, 1), 5)
+
+    var ok: bool = true
+    ok = _assert(bool(result.get("ok", false)), "kitchen blueprint should be accepted even before enough wood exists") and ok
+    ok = _assert(_build_jobs(sim).size() == 0, "kitchen build job should wait until three wood are available") and ok
+    ok = _assert(sim.constructions[str(result.get("construction_id", ""))].status == "planned", "kitchen should remain planned until wood is reserved") and ok
+    sim.items.erase("item_wood_short")
+    _add_stockpiled_item(sim, "item_wood_stack", "wood", 3, Vector2i(4, 4), stockpile_id)
+    sim.step_tick()
+    ok = _assert(_build_jobs(sim).size() == 1, "three stored wood should create a kitchen build job") and ok
+    ok = _assert(sim.items["item_wood_stack"].reserved_by_job_id == "job_000001", "kitchen build job should reserve the wood stack") and ok
+    return ok
+
+func _test_completed_kitchen_occupies_3x3_workshop_area() -> bool:
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(57)
+    var stockpile_id: String = sim.create_stockpile([Vector2i(4, 4)], ["wood"])
+    _add_stockpiled_item(sim, "item_wood_stack", "wood", 3, Vector2i(4, 4), stockpile_id)
+    var result: Dictionary = sim.create_construction("kitchen", Vector2i(1, 1), 5)
+
+    _run_ticks(sim, 20)
+
+    var construction = sim.constructions[str(result.get("construction_id", ""))]
+    var ok: bool = true
+    ok = _assert(construction.status == "complete", "kitchen construction should complete as a workshop") and ok
+    ok = _assert(construction.completed_building_id == "building_000001", "kitchen should allocate a completed building id") and ok
+    for x in range(0, 3):
+        for y in range(0, 3):
+            var cell = sim.world.get_cell(Vector2i(x, y))
+            ok = _assert(cell.building_id == construction.completed_building_id, "completed kitchen should occupy every cell in its 3x3 footprint") and ok
+            ok = _assert(cell.walkable, "kitchen workshop cells should remain walkable") and ok
+    var workshop: Dictionary = sim.find_workshop_at_cell(Vector2i(2, 2))
+    ok = _assert(workshop.get("building_id", "") == construction.completed_building_id, "clicking any kitchen footprint cell should find the kitchen workshop") and ok
+    return ok
+
+func _test_kitchen_cook_order_consumes_two_food_and_produces_meal() -> bool:
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(58)
+    var wood_stockpile_id: String = sim.create_stockpile([Vector2i(4, 4)], ["wood"])
+    _add_stockpiled_item(sim, "item_wood_stack", "wood", 3, Vector2i(4, 4), wood_stockpile_id)
+    var kitchen_result: Dictionary = sim.create_construction("kitchen", Vector2i(1, 1), 5)
+    _run_ticks(sim, 20)
+    var kitchen = sim.constructions[str(kitchen_result.get("construction_id", ""))]
+    var stockpile_id: String = sim.create_stockpile([Vector2i(4, 5), Vector2i(4, 6)], ["food"])
+    _add_stockpiled_item(sim, "item_food_a", "food", 1, Vector2i(4, 5), stockpile_id)
+    _add_stockpiled_item(sim, "item_food_b", "food", 1, Vector2i(4, 6), stockpile_id)
+
+    var order: Dictionary = sim.create_workshop_order(kitchen.completed_building_id, "cook_meal", 5)
+    var ok: bool = true
+    ok = _assert(bool(order.get("ok", false)), "completed kitchen should accept a cook meal order") and ok
+    ok = _assert(_jobs_of_type(sim, "COOK_MEAL").size() == 1, "cook meal order with two stored food items should create one cooking job") and ok
+
+    _run_ticks(sim, 40)
+
+    ok = _assert(_count_items_of_type(sim, "food") == 0, "cooking a meal should consume two stored food items") and ok
+    ok = _assert(_count_items_of_type(sim, "meal") == 1, "cooking a meal should produce one meal item") and ok
+    ok = _assert(not sim.job_board.jobs.has("job_000002"), "completed cooking job should be removed from the live job board") and ok
+    ok = _assert(sim.workshop_orders["workshop_order_000001"]["status"] == "complete", "workshop order should be marked complete after cooking finishes") and ok
     return ok

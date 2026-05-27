@@ -35,6 +35,7 @@ REQUIRED_FILES = [
     'tests/test_simulation_primitives.gd',
     'tests/test_forest_fixture.gd',
     'tests/test_seeded_rng.gd',
+    'tests/test_world_generation.gd',
     'tests/test_world_shell.gd',
     'tests/test_job_board.gd',
     'tests/test_job_timers.gd',
@@ -120,6 +121,8 @@ def main() -> int:
     assert_contains('scripts/simulation/deterministic_rng.gd', 'func next_u32')
     assert_contains('scripts/simulation/deterministic_rng.gd', 'func get_state')
     assert_contains('scripts/simulation/grid_world.gd', 'func create_forest')
+    assert_contains('scripts/simulation/grid_world.gd', 'func generate_ironveil_region')
+    assert_contains('tests/run_godot_tests.gd', 'test_world_generation.gd')
     assert_contains('scripts/simulation/job_board.gd', 'func get_best_open_job_for_unit')
     assert_contains('scripts/presentation/world_renderer.gd', 'func sync_from_simulation')
     assert_contains('scripts/presentation/world_renderer.gd', 'func _sync_designations')

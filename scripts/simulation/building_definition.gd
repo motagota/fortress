@@ -2,6 +2,7 @@ class_name BuildingDefinition
 extends RefCounted
 
 const WALL_BLOCK := "wall_block"
+const KITCHEN := "kitchen"
 
 const DEFINITIONS := {
     WALL_BLOCK: {
@@ -9,7 +10,18 @@ const DEFINITIONS := {
         "display_name": "Wall Block",
         "required_items": {"stone": 2},
         "blocks_movement": true,
+        "footprint": [1, 1],
         "work_ticks": 5,
+    },
+    KITCHEN: {
+        "id": KITCHEN,
+        "display_name": "Kitchen",
+        "required_items": {"wood": 3},
+        "blocks_movement": false,
+        "footprint": [3, 3],
+        "work_ticks": 5,
+        "workshop": true,
+        "recipes": ["cook_meal"],
     },
 }
 

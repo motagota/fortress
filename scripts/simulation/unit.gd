@@ -5,10 +5,11 @@ var id: String
 var display_name: String
 var position: Vector2i
 var inventory: Array[String] = []
-var allowed_jobs: Array[String] = ["CHOP_TREE", "GATHER_STONE", "GATHER_FOOD", "HAUL_ITEM", "BUILD_CONSTRUCTION"]
+var allowed_jobs: Array[String] = ["CHOP_TREE", "GATHER_STONE", "GATHER_FOOD", "MINE_CELL", "HAUL_ITEM", "BUILD_CONSTRUCTION", "COOK_MEAL"]
 var job_type_priorities: Dictionary = {}
-var skills: Dictionary = {"labor": 1}
+var skills: Dictionary = {"labor": 1, "mining": 1}
 var current_job_id: String = ""
+var unreachable_job_ticks: int = 0
 var needs: Dictionary = {"hunger": 0, "energy": 100, "morale": 50}
 var state: String = "idle"
 
@@ -53,8 +54,17 @@ func to_canonical_dict() -> Dictionary:
         "inventory": inv,
         "allowed_jobs": allowed,
         "job_type_priorities": _canonical_job_type_priorities(),
-        "skills": {"labor": skills.get("labor", 0)},
+        "skills": _canonical_skills(),
         "current_job_id": current_job_id,
+        "unreachable_job_ticks": unreachable_job_ticks,
         "needs": {"energy": needs.get("energy", 0), "hunger": needs.get("hunger", 0), "morale": needs.get("morale", 0)},
         "state": state,
     }
+
+func _canonical_skills() -> Dictionary:
+    var result: Dictionary = {}
+    var keys: Array = skills.keys()
+    keys.sort()
+    for key in keys:
+        result[str(key)] = int(skills[key])
+    return result

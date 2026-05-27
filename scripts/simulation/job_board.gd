@@ -66,6 +66,18 @@ func claim_job(job_id: String, unit_id: String) -> bool:
     job.claimed_by_unit_id = unit_id
     return true
 
+func release_job(job_id: String, unit_id: String = "") -> bool:
+    if not jobs.has(job_id):
+        return false
+    var job = jobs[job_id]
+    if unit_id != "" and job.claimed_by_unit_id != unit_id:
+        return false
+    if not (job.status in ["claimed", "in_progress"]):
+        return false
+    job.status = "open"
+    job.claimed_by_unit_id = ""
+    return true
+
 func to_canonical_array() -> Array:
     var arr: Array = []
     for id in sorted_job_ids():

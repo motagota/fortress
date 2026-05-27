@@ -18,6 +18,29 @@ func _first_tree_position(sim) -> Vector2i:
             return Vector2i(int(pos[0]), int(pos[1]))
     return Vector2i(-1, -1)
 
+func _first_berry_position(sim) -> Vector2i:
+    var ids: Array = sim.resources.keys()
+    ids.sort()
+    for id in ids:
+        var resource: Dictionary = sim.resources[id]
+        if resource.get("type", "") == "berry":
+            var pos: Array = resource["position"]
+            return Vector2i(int(pos[0]), int(pos[1]))
+    return Vector2i(-1, -1)
+
+func _first_stone_position(sim) -> Vector2i:
+    var ids: Array = sim.resources.keys()
+    ids.sort()
+    for id in ids:
+        var resource: Dictionary = sim.resources[id]
+        if resource.get("type", "") == "stone":
+            var pos: Array = resource["position"]
+            return Vector2i(int(pos[0]), int(pos[1]))
+    return Vector2i(-1, -1)
+
+func _layer_for_depth(depth: int) -> int:
+    return 1 - depth
+
 func _count_items_of_type(sim, item_type: String) -> int:
     var total = 0
     for id in sim.items.keys():
@@ -34,17 +57,55 @@ func test_initial_forest_fixture_shape() -> bool:
         return false
     if not _assert(sim.units.size() == 3, "forest fixture must spawn exactly 3 units"):
         return false
-    if not _assert(sim.resources.size() > 0, "forest fixture must include tree resource nodes"):
+    if not _assert(_first_tree_position(sim) != Vector2i(-1, -1), "forest fixture must include tree resource nodes"):
+        return false
+    if not _assert(_first_berry_position(sim) != Vector2i(-1, -1), "forest fixture must include berry resource nodes"):
+        return false
+    if not _assert(_first_stone_position(sim) != Vector2i(-1, -1), "forest fixture must include surface rock resource nodes"):
+        return false
+    if not _assert(sim.world.get_cell(Vector2i(0, 12)).depth == -3, "forest fixture must include generated layer 4 at depth -3"):
+        return false
+    if not _assert(sim.world.get_cell(Vector2i(0, 12)).terrain == "dirt", "layer 4 should still generate as dirt before mining"):
+        return false
+    if not _assert(sim.world.get_cell(Vector2i(0, 13)).depth == -4, "forest fixture must include generated layer 5 at depth -4"):
+        return false
+    if not _assert(sim.world.get_cell(Vector2i(0, 13)).terrain == "solid_rock", "layer 5 should generate as solid rock"):
         return false
 
     for id in sim.resources.keys():
         var resource: Dictionary = sim.resources[id]
-        if not _assert(resource.get("type", "") == "tree", "forest fixture resources must be tree nodes only"):
+        if not _assert(resource.get("type", "") in ["tree", "berry", "stone"], "forest fixture resources must be tree, berry, or surface rock nodes"):
             return false
         var pos: Array = resource["position"]
         var cell = sim.world.get_cell(Vector2i(int(pos[0]), int(pos[1])))
-        if not _assert(cell != null and cell.resource_id == id, "tree resource index must match grid cell resource_id"):
+        if not _assert(cell != null and cell.resource_id == id, "resource index must match grid cell resource_id"):
             return false
+        var layer: int = _layer_for_depth(int(cell.depth))
+        if resource.get("type", "") in ["tree", "berry"]:
+            if not _assert(layer == 1, "trees and berries must only generate on the surface layer"):
+                return false
+        if resource.get("type", "") == "stone":
+            if not _assert(layer >= 1 and layer <= 3, "surface rocks must only generate in layers 1 through 3"):
+                return false
+    return true
+
+func test_gather_berries_creates_food() -> bool:
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(4242)
+    var berry_pos = _first_berry_position(sim)
+    if not _assert(berry_pos != Vector2i(-1, -1), "seeded forest must provide at least one berry target"):
+        return false
+
+    sim.queue_command(1, "player_001", "DESIGNATE_GATHER_FOOD", berry_pos, {"priority": 5})
+    for i in range(32):
+        sim.step_tick()
+
+    if not _assert(sim.world.get_cell(berry_pos).resource_id == "", "completed gather-food job must remove berry resource from cell"):
+        return false
+    if not _assert(_count_items_of_type(sim, "food") == 1, "completed berry gather must produce one food item"):
+        return false
+    if not _assert(not sim.job_board.jobs.has("job_000001"), "completed gather-food job must be removed from the live job board"):
+        return false
     return true
 
 func test_chop_designation_creates_job_and_produces_wood() -> bool:
@@ -70,7 +131,7 @@ func test_chop_designation_creates_job_and_produces_wood() -> bool:
         return false
     if not _assert(_count_items_of_type(sim, "wood") == 1, "completed chop job must produce one wood item"):
         return false
-    if not _assert(sim.job_board.jobs["job_000001"].status == "complete", "completed chop job must remain auditable as complete"):
+    if not _assert(not sim.job_board.jobs.has("job_000001"), "completed chop job must be removed from the live job board"):
         return false
     return true
 
@@ -92,5 +153,6 @@ func test_seeded_chop_replay_is_deterministic() -> bool:
 
 func run() -> bool:
     return test_initial_forest_fixture_shape() \
+        and test_gather_berries_creates_food() \
         and test_chop_designation_creates_job_and_produces_wood() \
         and test_seeded_chop_replay_is_deterministic()

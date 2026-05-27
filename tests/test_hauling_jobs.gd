@@ -14,6 +14,8 @@ func run() -> bool:
     ok = _test_loose_matching_item_creates_haul_job() and ok
     ok = _test_unit_carries_item_to_stockpile_and_counts_update() and ok
     ok = _test_two_units_do_not_reserve_same_item() and ok
+    ok = _test_stockpile_cells_accept_only_one_item_each() and ok
+    ok = _test_supply_only_stockpile_moves_items_to_storage_stockpile() and ok
     ok = _test_no_valid_stockpile_leaves_loose_item_in_place() and ok
     return ok
 
@@ -107,6 +109,54 @@ func _test_two_units_do_not_reserve_same_item() -> bool:
     ok = _assert(haul_jobs.size() == 1, "a reserved loose item must not generate duplicate haul jobs") and ok
     ok = _assert(item.reserved_by_job_id != "", "the loose item should be reserved by its single haul job") and ok
     ok = _assert(claimers.size() <= 1, "no more than one unit may claim the haul job for a single item") and ok
+    return ok
+
+func _test_stockpile_cells_accept_only_one_item_each() -> bool:
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(35)
+    var stockpile_id: String = sim.create_stockpile([Vector2i(4, 1), Vector2i(4, 2)], ["wood"])
+    _add_item(sim, "item_loose_wood_a", "wood", 1, Vector2i(1, 1))
+    _add_item(sim, "item_loose_wood_b", "wood", 1, Vector2i(1, 2))
+    _add_item(sim, "item_loose_wood_c", "wood", 1, Vector2i(1, 3))
+
+    sim.step_tick()
+
+    var destinations: Dictionary = {}
+    for job in _haul_jobs(sim):
+        var raw: Array = job.required_items.get("destination_cell", [])
+        destinations[JSON.stringify(raw)] = true
+    var ok: bool = true
+    ok = _assert(_haul_jobs(sim).size() == 2, "two-cell stockpile should request only two loose items at a time") and ok
+    ok = _assert(destinations.size() == 2, "haul jobs must reserve distinct stockpile cells") and ok
+
+    _step_until_no_active_haul_jobs(sim, 80)
+    ok = _assert(sim.items["item_loose_wood_a"].position != sim.items["item_loose_wood_b"].position, "hauled stockpile items must not stack on the same cell") and ok
+    ok = _assert(_stockpiled_quantity(sim, stockpile_id, "wood") == 2, "full stockpile should contain one item per cell") and ok
+    sim.step_tick()
+    ok = _assert(_haul_jobs(sim).size() == 0, "completed haul jobs should be removed and full stockpile must not request another loose item") and ok
+    ok = _assert(sim.items["item_loose_wood_c"].stockpile_id == "", "extra item should stay loose when no stockpile cell is empty") and ok
+    return ok
+
+func _test_supply_only_stockpile_moves_items_to_storage_stockpile() -> bool:
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(36)
+    var supply_id: String = sim.create_stockpile([Vector2i(2, 2)], ["wood"], "supply")
+    var storage_id: String = sim.create_stockpile([Vector2i(5, 2)], ["wood"], "storage")
+    var item = ItemScript.new("item_stockpiled_wood", "wood", 1, Vector2i(2, 2))
+    item.stockpile_id = supply_id
+    sim.items[item.id] = item
+
+    sim.step_tick()
+
+    var jobs: Array = _haul_jobs(sim)
+    var ok: bool = true
+    ok = _assert(jobs.size() == 1, "item in a supply-only stockpile should create a relocation haul job when storage is available") and ok
+    if jobs.size() == 1:
+        ok = _assert(jobs[0].required_items.get("source_stockpile_id", "") == supply_id, "relocation haul job should record the source supply stockpile") and ok
+        ok = _assert(jobs[0].required_items.get("stockpile_id", "") == storage_id, "relocation haul job should target the storage stockpile") and ok
+    _step_until_no_active_haul_jobs(sim, 80)
+    ok = _assert(sim.items["item_stockpiled_wood"].stockpile_id == storage_id, "relocated item should be assigned to the storage stockpile") and ok
+    ok = _assert(sim.items["item_stockpiled_wood"].position == Vector2i(5, 2), "relocated item should be moved to the storage stockpile cell") and ok
     return ok
 
 func _test_no_valid_stockpile_leaves_loose_item_in_place() -> bool:

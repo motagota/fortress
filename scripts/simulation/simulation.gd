@@ -4,15 +4,23 @@ extends RefCounted
 const WORLD_WIDTH := 16
 const WORLD_HEIGHT := 16
 const INITIAL_UNIT_COUNT := 3
+const HUNGER_EAT_THRESHOLD := 20
+const HUNGER_AFTER_EATING := 0
+const RECIPE_COOK_MEAL := "cook_meal"
+const DEEP_MINING_COLLAPSE_DEPTH := -3
+const DEEP_MINING_COLLAPSE_CHANCE_PERCENT := 25
+const UNREACHABLE_JOB_RELEASE_TICKS := 4
 
 const TOOL_MODE_GATHER_WOOD := "gather_wood"
 const TOOL_MODE_GATHER_STONE := "gather_stone"
 const TOOL_MODE_GATHER_FOOD := "gather_food"
+const TOOL_MODE_MINE := "mine"
 
 const RngScript := preload("res://scripts/simulation/deterministic_rng.gd")
 const GridWorldScript := preload("res://scripts/simulation/grid_world.gd")
 const UnitScript := preload("res://scripts/simulation/unit.gd")
 const ItemScript := preload("res://scripts/simulation/item.gd")
+const ZoneScript := preload("res://scripts/simulation/zone.gd")
 const StockpileScript := preload("res://scripts/simulation/stockpile.gd")
 const BuildingDefinitionScript := preload("res://scripts/simulation/building_definition.gd")
 const ConstructionRecordScript := preload("res://scripts/simulation/construction_record.gd")
@@ -27,10 +35,11 @@ var units: Dictionary = {}
 var items: Dictionary = {}
 var stockpiles: Dictionary = {}
 var constructions: Dictionary = {}
+var workshop_orders: Dictionary = {}
 var resources: Dictionary = {}
 var job_board
 var command_queue: Array[Dictionary] = []
-var id_counters: Dictionary = {"unit": 0, "job": 0, "item": 0, "command": 0, "building": 0, "stockpile": 0, "construction": 0}
+var id_counters: Dictionary = {"unit": 0, "job": 0, "item": 0, "command": 0, "building": 0, "stockpile": 0, "construction": 0, "workshop_order": 0}
 
 func initialize_new_game(seed_value: int = 1) -> void:
     tick = 0
@@ -41,11 +50,12 @@ func initialize_new_game(seed_value: int = 1) -> void:
         "event_rng": RngScript.new(seed_value ^ 0x005eeded),
     }
     command_queue = []
-    id_counters = {"unit": 0, "job": 0, "item": 0, "command": 0, "building": 0, "stockpile": 0, "construction": 0}
+    id_counters = {"unit": 0, "job": 0, "item": 0, "command": 0, "building": 0, "stockpile": 0, "construction": 0, "workshop_order": 0}
     resources = {}
     items = {}
     stockpiles = {}
     constructions = {}
+    workshop_orders = {}
     units = {}
     job_board = JobBoardScript.new()
     world = GridWorldScript.new(WORLD_WIDTH, WORLD_HEIGHT)
@@ -63,74 +73,147 @@ func allocate_id(prefix: String) -> String:
     id_counters[prefix] = int(id_counters.get(prefix, 0)) + 1
     return "%s_%06d" % [prefix, id_counters[prefix]]
 
-func create_stockpile(cells: Array, accepted_item_types: Array) -> String:
+func create_stockpile(cells: Array, accepted_item_types: Array, storage_mode: String = "both") -> String:
+    var valid_cells: Array[Vector2i] = _valid_stockpile_cells(cells)
+    if valid_cells.is_empty():
+        return ""
+    if _cells_overlap_stockpiles(valid_cells):
+        return ""
     var id: String = allocate_id("stockpile")
-    stockpiles[id] = StockpileScript.new(id, accepted_item_types, cells)
+    stockpiles[id] = StockpileScript.new(id, accepted_item_types, valid_cells, storage_mode)
     return id
 
 func designate_stockpile(start_cell: Vector2i, payload: Dictionary) -> String:
-    # Create a stockpile from a single seed cell, expanding to adjacent walkable cells
-    if not world.in_bounds(start_cell):
-        return ""
-    var cell = world.get_cell(start_cell)
-    if cell == null or not cell.walkable:
-        return ""
-    
-    var accepted_types: Array = payload.get("accepted_item_types", ["wood", "stone", "food"])
-    var cells: Array[Vector2i] = [start_cell]
-    
-    # Simple 3x3 expansion: add adjacent walkable cells
-    var directions: Array[Vector2i] = [
-        Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1),
-        Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1)
-    ]
-    for dir in directions:
-        var neighbor: Vector2i = start_cell + dir
-        if world.in_bounds(neighbor):
-            var neighbor_cell = world.get_cell(neighbor)
-            if neighbor_cell != null and neighbor_cell.walkable:
-                cells.append(neighbor)
-    
-    return create_stockpile(cells, accepted_types)
+    var accepted_types: Array = payload.get("accepted_item_types", ["wood", "stone", "dirt", "food", "meal"])
+    var cells: Array = payload.get("cells", [start_cell])
+    if cells.is_empty():
+        cells = [start_cell]
+    return create_stockpile(cells, accepted_types, str(payload.get("storage_mode", "both")))
+
+func find_stockpile_at_cell(target_cell: Vector2i) -> String:
+    for stockpile_id in _sorted_ids(stockpiles):
+        if stockpiles[stockpile_id].contains_cell(target_cell):
+            return stockpile_id
+    return ""
+
+func get_stockpile_resize_handles(stockpile_id: String) -> Array:
+    if not stockpiles.has(stockpile_id):
+        return []
+    var bounds: Dictionary = _stockpile_bounds(stockpiles[stockpile_id].cells)
+    if bounds.is_empty():
+        return []
+    var min_x: int = int(bounds["min_x"])
+    var max_x: int = int(bounds["max_x"])
+    var min_y: int = int(bounds["min_y"])
+    var max_y: int = int(bounds["max_y"])
+    var center_x: int = int(floor(float(min_x + max_x) * 0.5))
+    var center_y: int = int(floor(float(min_y + max_y) * 0.5))
+    var handles: Array = []
+    _append_resize_handle(handles, Vector2i(center_x, min_y - 1), "north", 1, "^")
+    _append_resize_handle(handles, Vector2i(center_x, max_y + 1), "south", 1, "v")
+    _append_resize_handle(handles, Vector2i(min_x - 1, center_y), "west", 1, "<")
+    _append_resize_handle(handles, Vector2i(max_x + 1, center_y), "east", 1, ">")
+    if min_y < max_y:
+        _append_resize_handle(handles, Vector2i(center_x, min_y), "north", -1, "v")
+        _append_resize_handle(handles, Vector2i(center_x, max_y), "south", -1, "^")
+    if min_x < max_x:
+        _append_resize_handle(handles, Vector2i(min_x, center_y), "west", -1, ">")
+        _append_resize_handle(handles, Vector2i(max_x, center_y), "east", -1, "<")
+    return handles
+
+func _append_resize_handle(handles: Array, cell: Vector2i, side: String, delta: int, label: String) -> void:
+    if world == null or not world.in_bounds(cell):
+        return
+    handles.append({
+        "cell": [cell.x, cell.y],
+        "side": side,
+        "delta": delta,
+        "label": label,
+    })
 
 func get_building_definition(building_type: String) -> Dictionary:
     return BuildingDefinitionScript.get_definition(building_type)
 
+func find_workshop_at_cell(target_cell: Vector2i) -> Dictionary:
+    for construction_id in _sorted_ids(constructions):
+        var construction = constructions[construction_id]
+        if construction.status != "complete":
+            continue
+        var definition: Dictionary = get_building_definition(construction.type)
+        if not bool(definition.get("workshop", false)):
+            continue
+        for cell in _construction_cells(construction):
+            if cell == target_cell:
+                return _workshop_summary(construction)
+    return {}
+
+func queue_workshop_recipe_command(command_tick: int, player_id: String, building_id: String, recipe_id: String, payload: Dictionary = {}) -> Dictionary:
+    var validation: Dictionary = validate_workshop_recipe(building_id, recipe_id)
+    if not bool(validation.get("valid", false)):
+        return validation
+    var command_payload: Dictionary = payload.duplicate(true)
+    command_payload["building_id"] = building_id
+    command_payload["recipe_id"] = recipe_id
+    validation["command"] = queue_command(command_tick, player_id, "QUEUE_WORKSHOP_RECIPE", Vector2i.ZERO, command_payload)
+    return validation
+
+func validate_workshop_recipe(building_id: String, recipe_id: String) -> Dictionary:
+    var construction = _completed_construction_for_building(building_id)
+    if construction == null:
+        return {"valid": false, "warning": "Select a workshop first", "building_id": building_id, "recipe_id": recipe_id}
+    var definition: Dictionary = get_building_definition(construction.type)
+    if not bool(definition.get("workshop", false)):
+        return {"valid": false, "warning": "Selected building is not a workshop", "building_id": building_id, "recipe_id": recipe_id}
+    if not definition.get("recipes", []).has(recipe_id):
+        return {"valid": false, "warning": "Workshop cannot make that recipe", "building_id": building_id, "recipe_id": recipe_id}
+    if _recipe_definition(recipe_id).is_empty():
+        return {"valid": false, "warning": "Unknown recipe", "building_id": building_id, "recipe_id": recipe_id}
+    return {"valid": true, "warning": "", "building_id": building_id, "recipe_id": recipe_id}
+
 func queue_blueprint_command(command_tick: int, player_id: String, building_type: String, target_cell: Vector2i, payload: Dictionary = {}) -> Dictionary:
-    var result: Dictionary = validate_blueprint_target(building_type, target_cell)
+    var result: Dictionary = validate_blueprint_target(building_type, target_cell, payload.get("cells", []))
     if not bool(result["valid"]):
         return result
     var command_payload: Dictionary = payload.duplicate(true)
     command_payload["building_type"] = building_type
+    command_payload["cells"] = _serialize_cells(result["cells"])
     result["command"] = queue_command(command_tick, player_id, "PLACE_BLUEPRINT", target_cell, command_payload)
     return result
 
-func validate_blueprint_target(building_type: String, target_cell: Vector2i) -> Dictionary:
+func validate_blueprint_target(building_type: String, target_cell: Vector2i, cells: Array = []) -> Dictionary:
     var definition: Dictionary = get_building_definition(building_type)
     if definition.is_empty():
-        return {"valid": false, "warning": "Unknown building type: " + building_type, "construction_id": ""}
-    if world == null or not world.in_bounds(target_cell):
-        return {"valid": false, "warning": "Blueprint target is out of bounds", "construction_id": ""}
-    var cell = world.get_cell(target_cell)
-    if cell == null:
-        return {"valid": false, "warning": "Blueprint target is out of bounds", "construction_id": ""}
-    if not bool(cell.walkable):
-        return {"valid": false, "warning": "Blueprint target must be walkable", "construction_id": ""}
-    if str(cell.building_id) != "":
-        return {"valid": false, "warning": "Blueprint target already has a building", "construction_id": ""}
-    if str(cell.resource_id) != "":
-        return {"valid": false, "warning": "Blueprint target contains a resource", "construction_id": ""}
-    if _has_loose_item_at(target_cell):
-        return {"valid": false, "warning": "Blueprint target contains a loose item", "construction_id": ""}
+        return {"valid": false, "warning": "Unknown building type: " + building_type, "construction_id": "", "cells": []}
     var existing_id: String = _find_construction_at(building_type, target_cell)
     if existing_id != "":
-        return {"valid": true, "warning": "", "construction_id": existing_id}
-    if _has_conflicting_construction_at(target_cell):
-        return {"valid": false, "warning": "Blueprint target already has a blueprint", "construction_id": ""}
-    return {"valid": true, "warning": "", "construction_id": ""}
+        if constructions[existing_id].status == "complete":
+            return {"valid": false, "warning": "Blueprint area already has a building", "construction_id": existing_id, "cells": _construction_cells(constructions[existing_id])}
+        return {"valid": true, "warning": "", "construction_id": existing_id, "cells": _construction_cells(constructions[existing_id])}
+    var footprint_cells: Array[Vector2i] = _building_footprint_cells(building_type, target_cell) if cells.is_empty() else ZoneScript.canonical_cells(cells)
+    if footprint_cells.is_empty():
+        return {"valid": false, "warning": "Blueprint target is out of bounds", "construction_id": "", "cells": []}
+    if not _cells_match_building_footprint(building_type, footprint_cells):
+        return {"valid": false, "warning": "Kitchen needs exactly a clear 3x3 zone", "construction_id": "", "cells": []}
+    for footprint_cell in footprint_cells:
+        var cell = world.get_cell(footprint_cell)
+        if cell == null:
+            return {"valid": false, "warning": "Blueprint target is out of bounds", "construction_id": "", "cells": []}
+        if not bool(cell.walkable):
+            return {"valid": false, "warning": "Blueprint area must be walkable", "construction_id": "", "cells": []}
+        if str(cell.building_id) != "":
+            return {"valid": false, "warning": "Blueprint area already has a building", "construction_id": "", "cells": []}
+        if str(cell.resource_id) != "":
+            return {"valid": false, "warning": "Blueprint area contains a resource", "construction_id": "", "cells": []}
+        if _has_loose_item_at(footprint_cell):
+            return {"valid": false, "warning": "Blueprint area contains a loose item", "construction_id": "", "cells": []}
+        if _cell_in_any_stockpile(footprint_cell):
+            return {"valid": false, "warning": "Blueprint area contains a stockpile zone", "construction_id": "", "cells": []}
+    if _has_conflicting_construction_in_cells(footprint_cells):
+        return {"valid": false, "warning": "Blueprint area already has a blueprint", "construction_id": "", "cells": []}
+    return {"valid": true, "warning": "", "construction_id": "", "cells": footprint_cells}
 
-func create_construction(building_type: String, target_cell: Vector2i, priority: int = 1) -> Dictionary:
-    var validation: Dictionary = validate_blueprint_target(building_type, target_cell)
+func create_construction(building_type: String, target_cell: Vector2i, priority: int = 1, cells: Array = []) -> Dictionary:
+    var validation: Dictionary = validate_blueprint_target(building_type, target_cell, cells)
     if not bool(validation.get("valid", false)):
         return {"ok": false, "warning": str(validation.get("warning", "Invalid construction target")), "construction_id": ""}
     var existing_id: String = str(validation.get("construction_id", ""))
@@ -145,7 +228,8 @@ func create_construction(building_type: String, target_cell: Vector2i, priority:
         definition.get("required_items", {}),
         priority,
         "planned",
-        ""
+        "",
+        validation["cells"]
     )
     _try_reserve_construction_resources(id)
     return {"ok": true, "warning": "", "construction_id": id}
@@ -179,6 +263,8 @@ func _try_reserve_construction_resources(construction_id: String) -> bool:
             if item.item_type != str(item_type):
                 continue
             if item.stockpile_id == "" or item.holder_unit_id != "" or item.reserved_by_job_id != "":
+                continue
+            if not stockpiles.has(item.stockpile_id) or not stockpiles[item.stockpile_id].can_supply_items():
                 continue
             reserved_item_ids.append(item_id)
             found += int(item.quantity)
@@ -221,9 +307,24 @@ func _find_construction_at(building_type: String, target_cell: Vector2i) -> Stri
     return ""
 
 func _has_conflicting_construction_at(target_cell: Vector2i) -> bool:
+    return _has_conflicting_construction_in_cells([target_cell])
+
+func _has_conflicting_construction_in_cells(cells: Array) -> bool:
+    var requested: Dictionary = {}
+    for cell in cells:
+        requested[_cell_key(cell)] = true
     for construction_id in _sorted_ids(constructions):
         var construction = constructions[construction_id]
-        if construction.target_cell == target_cell and construction.status != "cancelled":
+        if construction.status == "cancelled":
+            continue
+        for cell in _construction_cells(construction):
+            if requested.has(_cell_key(cell)):
+                return true
+    return false
+
+func _cell_in_any_stockpile(target_cell: Vector2i) -> bool:
+    for stockpile_id in _sorted_ids(stockpiles):
+        if stockpiles[stockpile_id].contains_cell(target_cell):
             return true
     return false
 
@@ -240,6 +341,12 @@ func assign_item_to_stockpile(item_id: String, stockpile_id: String) -> bool:
     var item = items[item_id]
     var stockpile = stockpiles[stockpile_id]
     if not stockpile.accepts_item_type(item.item_type):
+        return false
+    if not stockpile.can_store_items():
+        return false
+    if not stockpile.contains_cell(item.position):
+        return false
+    if _cell_has_visible_item(item.position, item_id):
         return false
     item.stockpile_id = stockpile_id
     item.holder_unit_id = ""
@@ -286,21 +393,128 @@ func queue_designation_command(command_tick: int, player_id: String, tool_mode: 
     result["command"] = queue_command(command_tick, player_id, str(result["command_type"]), target_cell, payload)
     return result
 
-func queue_stockpile_designation_command(command_tick: int, player_id: String, target_cell: Vector2i, accepted_item_types: Array = ["wood", "stone", "food"]) -> Dictionary:
-    var result: Dictionary = validate_stockpile_designation_target(target_cell)
+func queue_stockpile_designation_command(command_tick: int, player_id: String, target_cell: Vector2i, accepted_item_types: Array = ["wood", "stone", "dirt", "food", "meal"], cells: Array = [], storage_mode: String = "both") -> Dictionary:
+    var designation_cells: Array = cells
+    if designation_cells.is_empty():
+        designation_cells = [target_cell]
+    var result: Dictionary = validate_stockpile_designation_cells(designation_cells)
     if not bool(result["valid"]):
         return result
-    var payload: Dictionary = {"accepted_item_types": accepted_item_types}
+    var canonical_mode: String = StockpileScript.canonical_storage_mode(storage_mode)
+    if canonical_mode == "":
+        return {"valid": false, "warning": "Unknown stockpile storage mode", "stockpile_id": "", "cells": []}
+    var payload: Dictionary = {"accepted_item_types": accepted_item_types, "cells": _serialize_cells(result["cells"]), "storage_mode": canonical_mode}
     result["command"] = queue_command(command_tick, player_id, "DESIGNATE_STOCKPILE", target_cell, payload)
     return result
 
+func queue_stockpile_mode_command(command_tick: int, player_id: String, stockpile_id: String, storage_mode: String) -> Dictionary:
+    var result: Dictionary = validate_stockpile_mode(stockpile_id, storage_mode)
+    if not bool(result["valid"]):
+        return result
+    result["command"] = queue_command(command_tick, player_id, "SET_STOCKPILE_MODE", _stockpile_center_cell(stockpile_id), {
+        "stockpile_id": stockpile_id,
+        "storage_mode": StockpileScript.canonical_storage_mode(storage_mode),
+    })
+    return result
+
+func validate_stockpile_mode(stockpile_id: String, storage_mode: String) -> Dictionary:
+    if not stockpiles.has(stockpile_id):
+        return {"valid": false, "warning": "Select a stockpile zone first", "stockpile_id": stockpile_id}
+    if StockpileScript.canonical_storage_mode(storage_mode) == "":
+        return {"valid": false, "warning": "Unknown stockpile storage mode", "stockpile_id": stockpile_id}
+    return {"valid": true, "warning": "", "stockpile_id": stockpile_id}
+
+func set_stockpile_mode(stockpile_id: String, storage_mode: String) -> bool:
+    if not stockpiles.has(stockpile_id):
+        return false
+    return stockpiles[stockpile_id].set_storage_mode(storage_mode)
+
+func queue_stockpile_resize_command(command_tick: int, player_id: String, stockpile_id: String, side: String, delta: int) -> Dictionary:
+    var result: Dictionary = validate_stockpile_resize(stockpile_id, side, delta)
+    if not bool(result["valid"]):
+        return result
+    var payload: Dictionary = {
+        "stockpile_id": stockpile_id,
+        "side": side,
+        "delta": delta,
+    }
+    var target_cell: Vector2i = _stockpile_center_cell(stockpile_id)
+    result["command"] = queue_command(command_tick, player_id, "RESIZE_STOCKPILE", target_cell, payload)
+    return result
+
+func validate_stockpile_resize(stockpile_id: String, side: String, delta: int) -> Dictionary:
+    if not stockpiles.has(stockpile_id):
+        return {"valid": false, "warning": "Select a stockpile zone first", "stockpile_id": stockpile_id}
+    if not (side in ["north", "south", "west", "east"]):
+        return {"valid": false, "warning": "Unknown stockpile resize side", "stockpile_id": stockpile_id}
+    if delta != -1 and delta != 1:
+        return {"valid": false, "warning": "Unknown stockpile resize direction", "stockpile_id": stockpile_id}
+    var resized_cells: Array[Vector2i] = _resized_stockpile_cells(stockpile_id, side, delta)
+    if resized_cells.is_empty():
+        return {"valid": false, "warning": "Stockpile cannot shrink any further", "stockpile_id": stockpile_id}
+    var validation: Dictionary = validate_stockpile_designation_cells(resized_cells, stockpile_id)
+    if not bool(validation["valid"]):
+        return {"valid": false, "warning": str(validation.get("warning", "Invalid stockpile resize")), "stockpile_id": stockpile_id}
+    if validation["cells"].size() != resized_cells.size():
+        return {"valid": false, "warning": "Stockpile resize needs walkable cells", "stockpile_id": stockpile_id}
+    if delta < 0 and _shrink_would_remove_stockpiled_items(stockpile_id, resized_cells):
+        return {"valid": false, "warning": "Cannot shrink a stockpile edge that contains items", "stockpile_id": stockpile_id}
+    return {"valid": true, "warning": "", "stockpile_id": stockpile_id, "cells": validation["cells"]}
+
+func resize_stockpile(stockpile_id: String, side: String, delta: int) -> bool:
+    var validation: Dictionary = validate_stockpile_resize(stockpile_id, side, delta)
+    if not bool(validation["valid"]):
+        return false
+    var stockpile = stockpiles[stockpile_id]
+    stockpile.cells = validation["cells"]
+    return true
+
 func validate_stockpile_designation_target(target_cell: Vector2i) -> Dictionary:
+    return validate_stockpile_designation_cells([target_cell])
+
+func validate_stockpile_designation_cells(cells: Array, ignored_stockpile_id: String = "") -> Dictionary:
+    var valid_cells: Array[Vector2i] = _valid_stockpile_cells(cells)
+    if valid_cells.is_empty():
+        return {"valid": false, "warning": "Stockpile zone needs at least one walkable cell", "stockpile_id": "", "cells": []}
+    if _cells_overlap_stockpiles(valid_cells, ignored_stockpile_id):
+        return {"valid": false, "warning": "Stockpile zones cannot overlap", "stockpile_id": "", "cells": []}
+    return {"valid": true, "warning": "", "stockpile_id": "", "cells": valid_cells}
+
+func _valid_stockpile_cells(cells: Array) -> Array[Vector2i]:
+    var output: Array[Vector2i] = []
+    for raw_cell in cells:
+        var target_cell: Vector2i
+        if raw_cell is Vector2i:
+            target_cell = raw_cell
+        elif raw_cell is Array and raw_cell.size() >= 2:
+            target_cell = Vector2i(int(raw_cell[0]), int(raw_cell[1]))
+        else:
+            continue
+        if not _is_valid_stockpile_cell(target_cell):
+            continue
+        output.append(target_cell)
+    return ZoneScript.canonical_cells(output)
+
+func _is_valid_stockpile_cell(target_cell: Vector2i) -> bool:
     if world == null or not world.in_bounds(target_cell):
-        return {"valid": false, "warning": "Stockpile target is out of bounds", "stockpile_id": ""}
+        return false
     var cell = world.get_cell(target_cell)
     if cell == null or not cell.walkable:
-        return {"valid": false, "warning": "Stockpile target must be walkable", "stockpile_id": ""}
-    return {"valid": true, "warning": "", "stockpile_id": ""}
+        return false
+    return true
+
+func _cells_overlap_stockpiles(cells: Array, ignored_stockpile_id: String = "") -> bool:
+    var requested: Dictionary = {}
+    for cell in ZoneScript.canonical_cells(cells):
+        requested[_cell_key(cell)] = true
+    for stockpile_id in _sorted_ids(stockpiles):
+        if stockpile_id == ignored_stockpile_id:
+            continue
+        var stockpile = stockpiles[stockpile_id]
+        for cell in stockpile.cells:
+            if requested.has(_cell_key(cell)):
+                return true
+    return false
 
 func validate_designation_target(tool_mode: String, target_cell: Vector2i) -> Dictionary:
     var spec: Dictionary = _designation_spec_for_tool_mode(tool_mode)
@@ -308,6 +522,8 @@ func validate_designation_target(tool_mode: String, target_cell: Vector2i) -> Di
         return {"valid": false, "warning": "Unknown designation tool: " + tool_mode, "command_type": ""}
     if world == null or not world.in_bounds(target_cell):
         return {"valid": false, "warning": "Designation target is out of bounds", "command_type": str(spec["command_type"])}
+    if tool_mode == TOOL_MODE_MINE:
+        return _validate_mine_designation_target(target_cell, spec)
     var cell = world.get_cell(target_cell)
     if cell == null or cell.resource_id == "":
         return {"valid": false, "warning": "Select a cell with " + str(spec["resource_label"]), "command_type": str(spec["command_type"])}
@@ -324,7 +540,28 @@ func _designation_spec_for_tool_mode(tool_mode: String) -> Dictionary:
             return {"resource_type": "stone", "resource_label": "stone", "command_type": "DESIGNATE_GATHER_STONE"}
         TOOL_MODE_GATHER_FOOD:
             return {"resource_type": "berry", "resource_label": "berry", "command_type": "DESIGNATE_GATHER_FOOD"}
+        TOOL_MODE_MINE:
+            return {"resource_label": "grass, dirt, or surface rock", "command_type": "DESIGNATE_MINE"}
     return {}
+
+func _validate_mine_designation_target(target_cell: Vector2i, spec: Dictionary) -> Dictionary:
+    var cell = world.get_cell(target_cell)
+    if cell == null:
+        return {"valid": false, "warning": "Designation target is out of bounds", "command_type": str(spec["command_type"])}
+    if str(cell.resource_id) != "":
+        var resource: Dictionary = resources.get(cell.resource_id, {})
+        if str(resource.get("type", "")) == "stone":
+            var stone_work_cell: Vector2i = _find_reachable_mine_work_cell(target_cell)
+            if stone_work_cell == Vector2i(-1, -1):
+                return {"valid": false, "warning": "No worker can reach a cell to mine that target", "command_type": str(spec["command_type"])}
+            return {"valid": true, "warning": "", "command_type": str(spec["command_type"]), "work_cell": [stone_work_cell.x, stone_work_cell.y]}
+        return {"valid": false, "warning": "Select grass, dirt, or a surface rock to mine", "command_type": str(spec["command_type"])}
+    if not world.is_mineable_cell(target_cell):
+        return {"valid": false, "warning": "Select grass, dirt, or a surface rock to mine", "command_type": str(spec["command_type"])}
+    var work_cell: Vector2i = _find_reachable_mine_work_cell(target_cell)
+    if work_cell == Vector2i(-1, -1):
+        return {"valid": false, "warning": "No worker can reach a cell to mine that target", "command_type": str(spec["command_type"])}
+    return {"valid": true, "warning": "", "command_type": str(spec["command_type"]), "work_cell": [work_cell.x, work_cell.y]}
 
 func queue_existing_command(command: Dictionary) -> void:
     command_queue.append(_normalize_command(command))
@@ -363,29 +600,63 @@ func step_tick() -> void:
     _apply_due_commands()
     create_haul_jobs_for_loose_items()
     create_build_jobs_for_ready_constructions()
+    create_workshop_jobs_for_ready_orders()
     _advance_needs()
+    _feed_hungry_units()
     _assign_jobs()
     _advance_units()
     _cleanup_completed_jobs()
 
 func create_haul_jobs_for_loose_items() -> void:
+    var reserved_destination_cells: Dictionary = _active_haul_destination_cells()
     for item_id in _sorted_ids(items):
         var item = items[item_id]
         if item.holder_unit_id != "" or item.stockpile_id != "" or item.reserved_by_job_id != "":
             continue
-        var stockpile_id: String = _find_stockpile_for_item_type(item.item_type)
+        var destination: Dictionary = _find_stockpile_destination_for_item(item.item_type, reserved_destination_cells)
+        var stockpile_id: String = str(destination.get("stockpile_id", ""))
         if stockpile_id == "":
             continue
-        var destination_cell: Vector2i = _first_stockpile_cell(stockpile_id)
+        var destination_cell: Vector2i = destination.get("cell", Vector2i(-1, -1))
         if destination_cell == Vector2i(-1, -1):
             continue
         var job_id: String = allocate_id("job")
         if not reserve_item_for_job(item_id, job_id):
             continue
+        reserved_destination_cells[_cell_key(destination_cell)] = true
         var job = JobScript.new(job_id, "HAUL_ITEM", item.position, 1)
         job.required_items = {
             "item_id": item_id,
             "stockpile_id": stockpile_id,
+            "destination_cell": [destination_cell.x, destination_cell.y],
+            "phase": "pickup",
+        }
+        job_board.add_job(job)
+    for item_id in _sorted_ids(items):
+        var item = items[item_id]
+        if item.holder_unit_id != "" or item.stockpile_id == "" or item.reserved_by_job_id != "":
+            continue
+        if not stockpiles.has(item.stockpile_id):
+            continue
+        var source_stockpile = stockpiles[item.stockpile_id]
+        if source_stockpile.can_store_items() or not source_stockpile.can_supply_items():
+            continue
+        var destination: Dictionary = _find_stockpile_destination_for_item(item.item_type, reserved_destination_cells)
+        var destination_stockpile_id: String = str(destination.get("stockpile_id", ""))
+        if destination_stockpile_id == "" or destination_stockpile_id == item.stockpile_id:
+            continue
+        var destination_cell: Vector2i = destination.get("cell", Vector2i(-1, -1))
+        if destination_cell == Vector2i(-1, -1):
+            continue
+        var job_id: String = allocate_id("job")
+        if not reserve_item_for_job(item_id, job_id):
+            continue
+        reserved_destination_cells[_cell_key(destination_cell)] = true
+        var job = JobScript.new(job_id, "HAUL_ITEM", item.position, 1)
+        job.required_items = {
+            "item_id": item_id,
+            "stockpile_id": destination_stockpile_id,
+            "source_stockpile_id": item.stockpile_id,
             "destination_cell": [destination_cell.x, destination_cell.y],
             "phase": "pickup",
         }
@@ -395,20 +666,295 @@ func create_build_jobs_for_ready_constructions() -> void:
     for construction_id in _sorted_ids(constructions):
         _try_reserve_construction_resources(construction_id)
 
+func create_workshop_order(building_id: String, recipe_id: String, priority: int = 1) -> Dictionary:
+    var validation: Dictionary = validate_workshop_recipe(building_id, recipe_id)
+    if not bool(validation.get("valid", false)):
+        return {"ok": false, "warning": str(validation.get("warning", "Invalid workshop order")), "workshop_order_id": ""}
+    var order_id: String = allocate_id("workshop_order")
+    var construction = _completed_construction_for_building(building_id)
+    workshop_orders[order_id] = {
+        "id": order_id,
+        "building_id": building_id,
+        "building_type": construction.type,
+        "recipe_id": recipe_id,
+        "target_cell": [construction.target_cell.x, construction.target_cell.y],
+        "priority": priority,
+        "status": "queued",
+        "reserved_item_ids": [],
+        "job_id": "",
+    }
+    _try_reserve_workshop_order(order_id)
+    return {"ok": true, "warning": "", "workshop_order_id": order_id}
+
+func create_workshop_jobs_for_ready_orders() -> void:
+    for order_id in _sorted_ids(workshop_orders):
+        _try_reserve_workshop_order(order_id)
+
+func _try_reserve_workshop_order(order_id: String) -> bool:
+    if not workshop_orders.has(order_id):
+        return false
+    var order: Dictionary = workshop_orders[order_id]
+    if str(order.get("status", "")) != "queued" or str(order.get("job_id", "")) != "":
+        return false
+    var recipe: Dictionary = _recipe_definition(str(order.get("recipe_id", "")))
+    if recipe.is_empty():
+        order["status"] = "failed"
+        return false
+    var reserved_item_ids: Array[String] = _reserve_recipe_ingredients(recipe.get("required_items", {}), "")
+    if reserved_item_ids.is_empty():
+        return false
+    var job_id: String = allocate_id("job")
+    for item_id in reserved_item_ids:
+        if not reserve_item_for_job(item_id, job_id):
+            for released_id in reserved_item_ids:
+                release_item_reservation(released_id, job_id)
+            return false
+    var target: Array = order.get("target_cell", [0, 0])
+    var job = JobScript.new(job_id, str(recipe.get("job_type", "COOK_MEAL")), Vector2i(int(target[0]), int(target[1])), int(order.get("priority", 1)))
+    job.work_remaining_ticks = int(recipe.get("work_ticks", job.work_remaining_ticks))
+    job.produced_items = recipe.get("produced_items", {}).duplicate(true)
+    job.required_items = {
+        "workshop_order_id": order_id,
+        "building_id": str(order.get("building_id", "")),
+        "recipe_id": str(order.get("recipe_id", "")),
+        "reserved_item_ids": reserved_item_ids.duplicate(),
+        "required_items": recipe.get("required_items", {}).duplicate(true),
+    }
+    order["reserved_item_ids"] = reserved_item_ids.duplicate()
+    order["job_id"] = job_id
+    order["status"] = "reserved"
+    job_board.add_job(job)
+    return true
+
+func _reserve_recipe_ingredients(required_items: Dictionary, job_id: String) -> Array[String]:
+    var reserved_item_ids: Array[String] = []
+    for item_type in _sorted_ids(required_items):
+        var needed: int = int(required_items[item_type])
+        var found: int = 0
+        for item_id in _sorted_ids(items):
+            var item = items[item_id]
+            if item.item_type != str(item_type):
+                continue
+            if item.stockpile_id == "" or item.holder_unit_id != "" or item.reserved_by_job_id != "":
+                continue
+            if not stockpiles.has(item.stockpile_id) or not stockpiles[item.stockpile_id].can_supply_items():
+                continue
+            reserved_item_ids.append(item_id)
+            found += int(item.quantity)
+            if found >= needed:
+                break
+        if found < needed:
+            return []
+    return reserved_item_ids
+
 func _find_stockpile_for_item_type(item_type: String) -> String:
     for stockpile_id in _sorted_ids(stockpiles):
         var stockpile = stockpiles[stockpile_id]
-        if stockpile.accepts_item_type(item_type) and stockpile.cells.size() > 0:
+        if stockpile.can_store_items() and stockpile.accepts_item_type(item_type) and _first_available_stockpile_cell(stockpile_id, {}) != Vector2i(-1, -1):
             return stockpile_id
     return ""
 
 func _first_stockpile_cell(stockpile_id: String) -> Vector2i:
+    return _first_available_stockpile_cell(stockpile_id, {})
+
+func _find_stockpile_destination_for_item(item_type: String, reserved_destination_cells: Dictionary) -> Dictionary:
+    for stockpile_id in _sorted_ids(stockpiles):
+        var stockpile = stockpiles[stockpile_id]
+        if not stockpile.can_store_items():
+            continue
+        if not stockpile.accepts_item_type(item_type):
+            continue
+        var cell: Vector2i = _first_available_stockpile_cell(stockpile_id, reserved_destination_cells)
+        if cell != Vector2i(-1, -1):
+            return {"stockpile_id": stockpile_id, "cell": cell}
+    return {"stockpile_id": "", "cell": Vector2i(-1, -1)}
+
+func _first_available_stockpile_cell(stockpile_id: String, reserved_destination_cells: Dictionary) -> Vector2i:
     if not stockpiles.has(stockpile_id):
         return Vector2i(-1, -1)
     var stockpile = stockpiles[stockpile_id]
-    if stockpile.cells.size() == 0:
-        return Vector2i(-1, -1)
-    return stockpile.cells[0]
+    for cell in stockpile.cells:
+        if reserved_destination_cells.has(_cell_key(cell)):
+            continue
+        if _cell_has_visible_item(cell):
+            continue
+        return cell
+    return Vector2i(-1, -1)
+
+func _active_haul_destination_cells() -> Dictionary:
+    var output: Dictionary = {}
+    for job_id in job_board.sorted_job_ids():
+        var job = job_board.jobs[job_id]
+        if job.type != "HAUL_ITEM" or not (job.status in ["open", "claimed", "in_progress"]):
+            continue
+        var cell: Vector2i = _haul_destination_cell(job)
+        if cell != Vector2i(-1, -1):
+            output[_cell_key(cell)] = true
+    return output
+
+func _cell_has_visible_item(cell: Vector2i, except_item_id: String = "") -> bool:
+    for item_id in _sorted_ids(items):
+        if item_id == except_item_id:
+            continue
+        var item = items[item_id]
+        if item.holder_unit_id == "" and item.position == cell:
+            return true
+    return false
+
+func _cell_key(cell: Vector2i) -> String:
+    return "%012d|%012d" % [cell.x, cell.y]
+
+func _building_footprint_cells(building_type: String, target_cell: Vector2i) -> Array[Vector2i]:
+    var definition: Dictionary = get_building_definition(building_type)
+    if definition.is_empty():
+        return []
+    var footprint: Array = definition.get("footprint", [1, 1])
+    var width: int = int(footprint[0]) if footprint.size() > 0 else 1
+    var height: int = int(footprint[1]) if footprint.size() > 1 else 1
+    var min_x: int = target_cell.x - int(floor(float(width) * 0.5))
+    var min_y: int = target_cell.y - int(floor(float(height) * 0.5))
+    var cells: Array[Vector2i] = []
+    for x in range(min_x, min_x + width):
+        for y in range(min_y, min_y + height):
+            var cell := Vector2i(x, y)
+            if world == null or not world.in_bounds(cell):
+                return []
+            cells.append(cell)
+    return cells
+
+func _construction_cells(construction) -> Array[Vector2i]:
+    if construction != null and construction.cells.size() > 0:
+        return ZoneScript.canonical_cells(construction.cells)
+    if construction == null:
+        return []
+    return _building_footprint_cells(construction.type, construction.target_cell)
+
+func _cells_match_building_footprint(building_type: String, cells: Array) -> bool:
+    var definition: Dictionary = get_building_definition(building_type)
+    if definition.is_empty():
+        return false
+    var canonical: Array[Vector2i] = ZoneScript.canonical_cells(cells)
+    var footprint: Array = definition.get("footprint", [1, 1])
+    var expected_width: int = int(footprint[0]) if footprint.size() > 0 else 1
+    var expected_height: int = int(footprint[1]) if footprint.size() > 1 else 1
+    if canonical.size() != expected_width * expected_height:
+        return false
+    var bounds: Dictionary = _stockpile_bounds(canonical)
+    if bounds.is_empty():
+        return false
+    if int(bounds["max_x"]) - int(bounds["min_x"]) + 1 != expected_width:
+        return false
+    if int(bounds["max_y"]) - int(bounds["min_y"]) + 1 != expected_height:
+        return false
+    return true
+
+func _serialized_building_footprint(building_type: String, target_cell: Vector2i) -> Array:
+    return _serialize_cells(_building_footprint_cells(building_type, target_cell))
+
+func _completed_construction_for_building(building_id: String):
+    if building_id == "":
+        return null
+    for construction_id in _sorted_ids(constructions):
+        var construction = constructions[construction_id]
+        if construction.status == "complete" and construction.completed_building_id == building_id:
+            return construction
+    return null
+
+func _workshop_summary(construction) -> Dictionary:
+    var definition: Dictionary = get_building_definition(construction.type)
+    return {
+        "building_id": construction.completed_building_id,
+        "construction_id": construction.id,
+        "type": construction.type,
+        "display_name": str(definition.get("display_name", construction.type)),
+        "target_cell": [construction.target_cell.x, construction.target_cell.y],
+        "footprint": _serialize_cells(_construction_cells(construction)),
+        "recipes": definition.get("recipes", []).duplicate(),
+    }
+
+func _recipe_definition(recipe_id: String) -> Dictionary:
+    match recipe_id:
+        RECIPE_COOK_MEAL:
+            return {
+                "id": RECIPE_COOK_MEAL,
+                "display_name": "Cook Meal",
+                "job_type": "COOK_MEAL",
+                "required_items": {"food": 2},
+                "produced_items": {"meal": 1},
+                "work_ticks": 4,
+            }
+    return {}
+
+func _stockpile_bounds(cells: Array) -> Dictionary:
+    if cells.is_empty():
+        return {}
+    var min_x: int = cells[0].x
+    var max_x: int = cells[0].x
+    var min_y: int = cells[0].y
+    var max_y: int = cells[0].y
+    for cell in cells:
+        min_x = mini(min_x, cell.x)
+        max_x = maxi(max_x, cell.x)
+        min_y = mini(min_y, cell.y)
+        max_y = maxi(max_y, cell.y)
+    return {"min_x": min_x, "max_x": max_x, "min_y": min_y, "max_y": max_y}
+
+func _stockpile_center_cell(stockpile_id: String) -> Vector2i:
+    if not stockpiles.has(stockpile_id):
+        return Vector2i.ZERO
+    var bounds: Dictionary = _stockpile_bounds(stockpiles[stockpile_id].cells)
+    if bounds.is_empty():
+        return Vector2i.ZERO
+    return Vector2i(
+        int(floor(float(int(bounds["min_x"]) + int(bounds["max_x"])) * 0.5)),
+        int(floor(float(int(bounds["min_y"]) + int(bounds["max_y"])) * 0.5))
+    )
+
+func _resized_stockpile_cells(stockpile_id: String, side: String, delta: int) -> Array[Vector2i]:
+    if not stockpiles.has(stockpile_id):
+        return []
+    var bounds: Dictionary = _stockpile_bounds(stockpiles[stockpile_id].cells)
+    if bounds.is_empty():
+        return []
+    var min_x: int = int(bounds["min_x"])
+    var max_x: int = int(bounds["max_x"])
+    var min_y: int = int(bounds["min_y"])
+    var max_y: int = int(bounds["max_y"])
+    match side:
+        "north":
+            min_y -= delta
+        "south":
+            max_y += delta
+        "west":
+            min_x -= delta
+        "east":
+            max_x += delta
+    if min_x > max_x or min_y > max_y:
+        return []
+    return _rect_cells(min_x, max_x, min_y, max_y)
+
+func _rect_cells(min_x: int, max_x: int, min_y: int, max_y: int) -> Array[Vector2i]:
+    var cells: Array[Vector2i] = []
+    for x in range(min_x, max_x + 1):
+        for y in range(min_y, max_y + 1):
+            cells.append(Vector2i(x, y))
+    return cells
+
+func _shrink_would_remove_stockpiled_items(stockpile_id: String, resized_cells: Array[Vector2i]) -> bool:
+    var kept: Dictionary = {}
+    for cell in resized_cells:
+        kept[_cell_key(cell)] = true
+    for item_id in _sorted_ids(items):
+        var item = items[item_id]
+        if item.stockpile_id == stockpile_id and item.holder_unit_id == "" and not kept.has(_cell_key(item.position)):
+            return true
+    for job_id in job_board.sorted_job_ids():
+        var job = job_board.jobs[job_id]
+        if job.type != "HAUL_ITEM" or str(job.required_items.get("stockpile_id", "")) != stockpile_id:
+            continue
+        if job.status in ["open", "claimed", "in_progress"] and not kept.has(_cell_key(_haul_destination_cell(job))):
+            return true
+    return false
 
 func _apply_due_commands() -> void:
     command_queue.sort_custom(_compare_commands)
@@ -429,10 +975,34 @@ func _apply_command(command: Dictionary) -> void:
             _create_job_for_resource(target, "stone", "GATHER_STONE", int(command["payload"].get("priority", 1)))
         "DESIGNATE_GATHER_FOOD":
             _create_job_for_resource(target, "berry", "GATHER_FOOD", int(command["payload"].get("priority", 1)))
+        "DESIGNATE_MINE":
+            _create_mine_job(target, int(command["payload"].get("priority", 1)))
         "DESIGNATE_STOCKPILE":
             designate_stockpile(target, command["payload"])
+        "RESIZE_STOCKPILE":
+            resize_stockpile(
+                str(command["payload"].get("stockpile_id", "")),
+                str(command["payload"].get("side", "")),
+                int(command["payload"].get("delta", 0))
+            )
+        "SET_STOCKPILE_MODE":
+            set_stockpile_mode(
+                str(command["payload"].get("stockpile_id", "")),
+                str(command["payload"].get("storage_mode", ""))
+            )
         "PLACE_BLUEPRINT":
-            create_construction(str(command["payload"].get("building_type", "")), target, int(command["payload"].get("priority", 1)))
+            create_construction(
+                str(command["payload"].get("building_type", "")),
+                target,
+                int(command["payload"].get("priority", 1)),
+                command["payload"].get("cells", [])
+            )
+        "QUEUE_WORKSHOP_RECIPE":
+            create_workshop_order(
+                str(command["payload"].get("building_id", "")),
+                str(command["payload"].get("recipe_id", "")),
+                int(command["payload"].get("priority", 1))
+            )
         "SET_UNIT_JOB_PRIORITY":
             set_unit_job_type_priority(
                 str(command["payload"].get("unit_id", "")),
@@ -459,12 +1029,64 @@ func _create_job_for_resource(target: Vector2i, resource_type: String, job_type:
     var job = JobScript.new(allocate_id("job"), job_type, target, priority)
     job_board.add_job(job)
 
+func _create_mine_job(target: Vector2i, priority: int) -> void:
+    var validation: Dictionary = validate_designation_target(TOOL_MODE_MINE, target)
+    if not bool(validation.get("valid", false)):
+        return
+    if job_board.has_open_job_at("MINE_CELL", target):
+        return
+    var job = JobScript.new(allocate_id("job"), "MINE_CELL", target, priority)
+    job.required_items["work_cell"] = validation.get("work_cell", [target.x, target.y])
+    job_board.add_job(job)
+
 func _advance_needs() -> void:
     for id in _sorted_ids(units):
         var unit = units[id]
         unit.needs["hunger"] = int(unit.needs.get("hunger", 0)) + 1
         if unit.state in ["working", "walking"]:
             unit.needs["energy"] = max(0, int(unit.needs.get("energy", 100)) - 1)
+
+func _feed_hungry_units() -> void:
+    for unit_id in _sorted_ids(units):
+        var unit = units[unit_id]
+        if int(unit.needs.get("hunger", 0)) < HUNGER_EAT_THRESHOLD:
+            continue
+        var food_item_id: String = _find_available_stored_food_item()
+        if food_item_id == "":
+            continue
+        _consume_food_item(food_item_id)
+        unit.needs["hunger"] = HUNGER_AFTER_EATING
+
+func _find_available_stored_food_item() -> String:
+    var meal_id: String = _find_available_stored_food_item_of_type("meal")
+    if meal_id != "":
+        return meal_id
+    return _find_available_stored_food_item_of_type("food")
+
+func _find_available_stored_food_item_of_type(food_type: String) -> String:
+    for item_id in _sorted_ids(items):
+        var item = items[item_id]
+        if item.item_type != food_type:
+            continue
+        if item.stockpile_id == "" or item.holder_unit_id != "" or item.reserved_by_job_id != "":
+            continue
+        if not stockpiles.has(item.stockpile_id):
+            continue
+        var stockpile = stockpiles[item.stockpile_id]
+        if not stockpile.can_store_items():
+            continue
+        if int(item.quantity) <= 0:
+            continue
+        return item_id
+    return ""
+
+func _consume_food_item(item_id: String) -> void:
+    if not items.has(item_id):
+        return
+    var item = items[item_id]
+    item.quantity = max(0, int(item.quantity) - 1)
+    if int(item.quantity) <= 0:
+        items.erase(item_id)
 
 func _assign_jobs() -> void:
     for id in _sorted_ids(units):
@@ -474,6 +1096,7 @@ func _assign_jobs() -> void:
         var job = job_board.claim_next_open_job_for_unit(unit)
         if job != null:
             unit.current_job_id = job.id
+            unit.unreachable_job_ticks = 0
             unit.state = "walking"
 
 func _advance_units() -> void:
@@ -481,19 +1104,29 @@ func _advance_units() -> void:
         var unit = units[id]
         if unit.current_job_id == "":
             unit.state = "idle"
+            unit.unreachable_job_ticks = 0
             continue
         var job = job_board.jobs.get(unit.current_job_id)
         if job == null:
             unit.current_job_id = ""
+            unit.unreachable_job_ticks = 0
             unit.state = "idle"
             continue
         if job.type == "HAUL_ITEM":
             _advance_haul_job(unit, job)
             continue
-        if unit.position != job.target_cell:
-            unit.position = _step_towards(unit.position, job.target_cell)
+        var destination_cell: Vector2i = _job_destination_cell(job)
+        if unit.position != destination_cell:
+            var next_position: Vector2i = _step_towards(unit.position, destination_cell)
+            if next_position == unit.position:
+                if _release_job_if_unreachable(unit, job):
+                    continue
+            else:
+                unit.unreachable_job_ticks = 0
+            unit.position = next_position
             unit.state = "walking"
         else:
+            unit.unreachable_job_ticks = 0
             unit.state = "working"
             if job.advance_work_tick():
                 _complete_job(unit, job)
@@ -515,9 +1148,15 @@ func _advance_haul_job(unit, job) -> void:
     var phase: String = str(job.required_items.get("phase", "pickup"))
     if phase == "pickup":
         if unit.position != item.position:
-            unit.position = _step_towards(unit.position, item.position)
+            var next_pickup_position: Vector2i = _step_towards(unit.position, item.position)
+            if next_pickup_position == unit.position:
+                _release_job_if_unreachable(unit, job)
+                return
+            unit.unreachable_job_ticks = 0
+            unit.position = next_pickup_position
             unit.state = "walking"
             return
+        unit.unreachable_job_ticks = 0
         item.holder_unit_id = unit.id
         if not unit.inventory.has(item_id):
             unit.inventory.append(item_id)
@@ -529,19 +1168,57 @@ func _advance_haul_job(unit, job) -> void:
         _fail_haul_job(unit, job, item_id)
         return
     if unit.position != destination:
-        unit.position = _step_towards(unit.position, destination)
+        var next_delivery_position: Vector2i = _step_towards(unit.position, destination)
+        if next_delivery_position == unit.position:
+            _release_job_if_unreachable(unit, job)
+            return
+        unit.unreachable_job_ticks = 0
+        unit.position = next_delivery_position
         item.position = unit.position
         unit.state = "carrying"
         return
-    assign_item_to_stockpile(item_id, stockpile_id)
+    unit.unreachable_job_ticks = 0
     item.position = destination
-    item.holder_unit_id = ""
+    if not assign_item_to_stockpile(item_id, stockpile_id):
+        _fail_haul_job(unit, job, item_id)
+        return
     release_item_reservation(item_id, job.id)
     unit.inventory.erase(item_id)
     job.status = "complete"
     job.claimed_by_unit_id = unit.id
     unit.current_job_id = ""
+    unit.unreachable_job_ticks = 0
     unit.state = "idle"
+
+func _release_job_if_unreachable(unit, job) -> bool:
+    unit.unreachable_job_ticks += 1
+    unit.state = "walking"
+    if unit.unreachable_job_ticks < UNREACHABLE_JOB_RELEASE_TICKS:
+        return false
+    _release_unreachable_job(unit, job)
+    return true
+
+func _release_unreachable_job(unit, job) -> void:
+    if job.type == "HAUL_ITEM":
+        var item_id: String = str(job.required_items.get("item_id", ""))
+        if items.has(item_id):
+            var item = items[item_id]
+            if item.holder_unit_id == unit.id:
+                item.holder_unit_id = ""
+                item.position = unit.position
+            unit.inventory.erase(item_id)
+        job.required_items["phase"] = "pickup"
+    job_board.release_job(job.id, unit.id)
+    unit.current_job_id = ""
+    unit.unreachable_job_ticks = 0
+    unit.state = "idle"
+
+func _job_destination_cell(job) -> Vector2i:
+    if job.type == "MINE_CELL":
+        var raw: Array = job.required_items.get("work_cell", [])
+        if raw.size() >= 2:
+            return Vector2i(int(raw[0]), int(raw[1]))
+    return job.target_cell
 
 func _haul_destination_cell(job) -> Vector2i:
     var raw: Array = job.required_items.get("destination_cell", [])
@@ -560,19 +1237,182 @@ func _fail_haul_job(unit, job, item_id: String) -> void:
     job.status = "failed"
     job.claimed_by_unit_id = unit.id
     unit.current_job_id = ""
+    unit.unreachable_job_ticks = 0
     unit.state = "idle"
 
 func _step_towards(from_cell: Vector2i, to_cell: Vector2i) -> Vector2i:
-    var result: Vector2i = from_cell
-    if result.x != to_cell.x:
-        result.x += 1 if to_cell.x > result.x else -1
-    elif result.y != to_cell.y:
-        result.y += 1 if to_cell.y > result.y else -1
-    return result
+    if from_cell == to_cell:
+        return from_cell
+    var path: Array[Vector2i] = _path_between_cells(from_cell, to_cell)
+    if path.size() < 2:
+        return from_cell
+    return path[1]
+
+func _path_between_cells(from_cell: Vector2i, to_cell: Vector2i) -> Array[Vector2i]:
+    if world == null or not world.in_bounds(from_cell) or not world.in_bounds(to_cell):
+        return []
+    if not _can_stand_on_cell(from_cell) or not _can_stand_on_cell(to_cell):
+        return []
+    var frontier: Array[Vector2i] = [from_cell]
+    var came_from: Dictionary = {_cell_key(from_cell): from_cell}
+    var cursor: int = 0
+    while cursor < frontier.size():
+        var current: Vector2i = frontier[cursor]
+        cursor += 1
+        if current == to_cell:
+            break
+        for neighbor in _movement_neighbors(current):
+            var key: String = _cell_key(neighbor)
+            if came_from.has(key):
+                continue
+            came_from[key] = current
+            frontier.append(neighbor)
+    if not came_from.has(_cell_key(to_cell)):
+        return []
+    var path: Array[Vector2i] = [to_cell]
+    var step: Vector2i = to_cell
+    while step != from_cell:
+        step = came_from[_cell_key(step)]
+        path.push_front(step)
+    return path
+
+func _find_reachable_mine_work_cell(target_cell: Vector2i) -> Vector2i:
+    var candidates: Array[Vector2i] = _mine_work_cell_candidates(target_cell)
+    if candidates.is_empty():
+        return Vector2i(-1, -1)
+    for unit_id in _sorted_ids(units):
+        var unit = units[unit_id]
+        for candidate in candidates:
+            if unit.position == candidate or _path_between_cells(unit.position, candidate).size() >= 2:
+                return candidate
+    return Vector2i(-1, -1)
+
+func _mine_work_cell_candidates(target_cell: Vector2i) -> Array[Vector2i]:
+    var target_data = world.get_cell(target_cell)
+    if target_data == null or not world.is_mineable_cell(target_cell):
+        return []
+    var candidates: Array[Vector2i] = []
+    var above: Vector2i = _cell_above(target_cell)
+    if above != Vector2i(-1, -1):
+        var above_data = world.get_cell(above)
+        if above_data != null and str(above_data.terrain) == GridWorldScript.TERRAIN_EXCAVATED and _can_stand_on_cell(above):
+            candidates.append(above)
+    var target_depth: int = int(target_data.depth)
+    var display_cell: Vector2i = _display_cell_for_sim_cell(target_cell)
+    for offset in [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]:
+        var candidate_display: Vector2i = display_cell + offset
+        if candidate_display.x < 0 or candidate_display.y < 0:
+            continue
+        var candidate: Vector2i = _cell_at_display_depth(candidate_display, target_depth)
+        if candidate == Vector2i(-1, -1) or candidate == target_cell:
+            continue
+        if _can_stand_on_cell(candidate):
+            candidates.append(candidate)
+    if int(target_data.depth) >= 0 and _can_stand_on_cell(target_cell):
+        candidates.append(target_cell)
+    return _dedupe_cells(candidates)
+
+func _dedupe_cells(cells: Array[Vector2i]) -> Array[Vector2i]:
+    var output: Array[Vector2i] = []
+    var seen: Dictionary = {}
+    for cell in cells:
+        var key: String = _cell_key(cell)
+        if seen.has(key):
+            continue
+        seen[key] = true
+        output.append(cell)
+    return output
+
+func _movement_neighbors(cell: Vector2i) -> Array[Vector2i]:
+    var output: Array[Vector2i] = []
+    for z in range(world.height):
+        for x in range(world.width):
+            var candidate := Vector2i(x, z)
+            if candidate == cell:
+                continue
+            if _can_step_between_cells(cell, candidate):
+                output.append(candidate)
+    return output
+
+func _can_step_between_cells(from_cell: Vector2i, to_cell: Vector2i) -> bool:
+    if not _can_stand_on_cell(to_cell):
+        return false
+    var from_data = world.get_cell(from_cell)
+    var to_data = world.get_cell(to_cell)
+    if from_data == null or to_data == null:
+        return false
+    var from_depth: int = int(from_data.depth)
+    var to_depth: int = int(to_data.depth)
+    var from_display: Vector2i = _display_cell_for_sim_cell(from_cell)
+    var to_display: Vector2i = _display_cell_for_sim_cell(to_cell)
+    if from_depth == to_depth:
+        return abs(from_display.x - to_display.x) + abs(from_display.y - to_display.y) == 1
+    if from_display != to_display or abs(from_depth - to_depth) != 1:
+        return false
+    if to_depth < from_depth:
+        return str(from_data.terrain) == GridWorldScript.TERRAIN_EXCAVATED
+    return str(to_data.terrain) == GridWorldScript.TERRAIN_EXCAVATED
+
+func _can_stand_on_cell(cell: Vector2i) -> bool:
+    var cell_data = world.get_cell(cell)
+    if cell_data == null:
+        return false
+    if not bool(cell_data.walkable):
+        return false
+    return _is_cell_exposed(cell)
+
+func _is_cell_exposed(cell: Vector2i) -> bool:
+    var cell_data = world.get_cell(cell)
+    if cell_data == null:
+        return false
+    if int(cell_data.depth) >= 0:
+        return true
+    var above: Vector2i = _cell_above(cell)
+    if above == Vector2i(-1, -1):
+        return false
+    var above_data = world.get_cell(above)
+    return above_data != null and str(above_data.terrain) == GridWorldScript.TERRAIN_EXCAVATED
+
+func _cell_above(cell: Vector2i) -> Vector2i:
+    var cell_data = world.get_cell(cell)
+    if cell_data == null:
+        return Vector2i(-1, -1)
+    var target_depth: int = int(cell_data.depth) + 1
+    var display_cell: Vector2i = _display_cell_for_sim_cell(cell)
+    return _cell_at_display_depth(display_cell, target_depth)
+
+func _cell_at_display_depth(display_cell: Vector2i, depth: int) -> Vector2i:
+    for z in range(world.height):
+        var candidate := Vector2i(display_cell.x, z)
+        var candidate_data = world.get_cell(candidate)
+        if candidate_data == null or int(candidate_data.depth) != depth:
+            continue
+        if _display_cell_for_sim_cell(candidate) == display_cell:
+            return candidate
+    return Vector2i(-1, -1)
+
+func _display_cell_for_sim_cell(cell: Vector2i) -> Vector2i:
+    var cell_data = world.get_cell(cell)
+    if cell_data == null:
+        return cell
+    var depth: int = int(cell_data.depth)
+    var first_row: int = cell.y
+    for z in range(world.height):
+        var layer_cell = world.get_cell(Vector2i(cell.x, z))
+        if layer_cell != null and int(layer_cell.depth) == depth:
+            first_row = z
+            break
+    return Vector2i(cell.x, cell.y - first_row)
 
 func _complete_job(unit, job) -> void:
     if job.type == "BUILD_CONSTRUCTION" or job.type == "BUILD_STRUCTURE":
         _complete_build_construction_job(unit, job)
+        return
+    if job.type == "COOK_MEAL":
+        _complete_workshop_job(unit, job)
+        return
+    if job.type == "MINE_CELL":
+        _complete_mine_job(unit, job)
         return
     var cell = world.get_cell(job.target_cell)
     var resource_id: String = cell.resource_id if cell != null else ""
@@ -587,7 +1427,107 @@ func _complete_job(unit, job) -> void:
     job.status = "complete"
     job.claimed_by_unit_id = unit.id
     unit.current_job_id = ""
+    unit.unreachable_job_ticks = 0
     unit.state = "idle"
+
+func _complete_mine_job(unit, job) -> void:
+    var cell = world.get_cell(job.target_cell)
+    if cell == null or not world.is_mineable_cell(job.target_cell):
+        job.status = "failed"
+        job.claimed_by_unit_id = unit.id
+        unit.current_job_id = ""
+        unit.unreachable_job_ticks = 0
+        unit.state = "idle"
+        return
+    var resource_id: String = str(cell.resource_id)
+    var original_terrain: String = str(cell.terrain)
+    if resource_id != "":
+        var resource: Dictionary = resources.get(resource_id, {})
+        if str(resource.get("type", "")) != "stone":
+            job.status = "failed"
+            job.claimed_by_unit_id = unit.id
+            unit.current_job_id = ""
+            unit.unreachable_job_ticks = 0
+            unit.state = "idle"
+            return
+        var item_id: String = allocate_id("item")
+        items[item_id] = ItemScript.new(item_id, "stone", 1, job.target_cell)
+        resources.erase(resource_id)
+        world.clear_resource(job.target_cell, resource_id)
+    elif str(cell.terrain) == "rock":
+        var rock_item_id: String = allocate_id("item")
+        items[rock_item_id] = ItemScript.new(rock_item_id, "stone", 1, job.target_cell)
+    elif str(cell.terrain) in ["grass", "dirt"]:
+        var dirt_item_id: String = allocate_id("item")
+        items[dirt_item_id] = ItemScript.new(dirt_item_id, "dirt", 1, job.target_cell)
+    world.mine_cell(job.target_cell)
+    if resource_id != "" and original_terrain == "rock":
+        cell.terrain = "excavated"
+    if _mine_cell_collapses(cell):
+        world.collapse_cell(job.target_cell)
+    job.status = "complete"
+    job.claimed_by_unit_id = unit.id
+    unit.current_job_id = ""
+    unit.unreachable_job_ticks = 0
+    unit.state = "idle"
+
+func _mine_cell_collapses(cell) -> bool:
+    if cell == null or int(cell.depth) > DEEP_MINING_COLLAPSE_DEPTH:
+        return false
+    return rng_streams["event_rng"].range_i(0, 99) < DEEP_MINING_COLLAPSE_CHANCE_PERCENT
+
+func _complete_workshop_job(unit, job) -> void:
+    var order_id: String = str(job.required_items.get("workshop_order_id", ""))
+    if not workshop_orders.has(order_id):
+        job.status = "failed"
+        job.claimed_by_unit_id = unit.id
+        unit.current_job_id = ""
+        unit.state = "idle"
+        return
+    var order: Dictionary = workshop_orders[order_id]
+    var recipe: Dictionary = _recipe_definition(str(order.get("recipe_id", "")))
+    if recipe.is_empty() or str(order.get("job_id", "")) != job.id:
+        job.status = "failed"
+        job.claimed_by_unit_id = unit.id
+        unit.current_job_id = ""
+        unit.state = "idle"
+        return
+    for item_id in order.get("reserved_item_ids", []):
+        if not items.has(item_id) or items[item_id].reserved_by_job_id != job.id:
+            job.status = "failed"
+            job.claimed_by_unit_id = unit.id
+            unit.current_job_id = ""
+            unit.state = "idle"
+            return
+    _consume_reserved_items_for_recipe(order.get("reserved_item_ids", []), recipe.get("required_items", {}), job.id)
+    for item_type in _sorted_ids(recipe.get("produced_items", {})):
+        var item_id: String = allocate_id("item")
+        items[item_id] = ItemScript.new(item_id, str(item_type), int(recipe["produced_items"][item_type]), job.target_cell)
+    order["status"] = "complete"
+    order["reserved_item_ids"] = []
+    job.status = "complete"
+    job.claimed_by_unit_id = unit.id
+    unit.current_job_id = ""
+    unit.state = "idle"
+
+func _consume_reserved_items_for_recipe(reserved_item_ids: Array, required_items: Dictionary, job_id: String) -> void:
+    var remaining: Dictionary = required_items.duplicate(true)
+    for item_id in reserved_item_ids:
+        if not items.has(item_id):
+            continue
+        var item = items[item_id]
+        var item_type: String = str(item.item_type)
+        var needed: int = int(remaining.get(item_type, 0))
+        if needed <= 0:
+            release_item_reservation(item_id, job_id)
+            continue
+        var consumed: int = mini(int(item.quantity), needed)
+        item.quantity = int(item.quantity) - consumed
+        remaining[item_type] = needed - consumed
+        if int(item.quantity) <= 0:
+            items.erase(item_id)
+        else:
+            release_item_reservation(item_id, job_id)
 
 func _complete_build_construction_job(unit, job) -> void:
     var construction_id: String = str(job.required_items.get("construction_id", ""))
@@ -610,13 +1550,21 @@ func _complete_build_construction_job(unit, job) -> void:
         unit.current_job_id = ""
         unit.state = "idle"
         return
-    var cell = world.get_cell(construction.target_cell)
-    if cell == null or str(cell.building_id) != "":
+    var footprint_cells: Array[Vector2i] = _construction_cells(construction)
+    if footprint_cells.is_empty():
         job.status = "failed"
         job.claimed_by_unit_id = unit.id
         unit.current_job_id = ""
         unit.state = "idle"
         return
+    for footprint_cell in footprint_cells:
+        var cell = world.get_cell(footprint_cell)
+        if cell == null or str(cell.building_id) != "":
+            job.status = "failed"
+            job.claimed_by_unit_id = unit.id
+            unit.current_job_id = ""
+            unit.state = "idle"
+            return
     for item_id in construction.reserved_item_ids:
         if not items.has(item_id) or items[item_id].reserved_by_job_id != job.id:
             job.status = "failed"
@@ -630,10 +1578,12 @@ func _complete_build_construction_job(unit, job) -> void:
     var building_id: String = allocate_id("building")
     construction.completed_building_id = building_id
     construction.status = "complete"
-    cell.building_id = building_id
     var definition: Dictionary = get_building_definition(construction.type)
-    if bool(definition.get("blocks_movement", false)):
-        cell.walkable = false
+    for footprint_cell in footprint_cells:
+        var cell = world.get_cell(footprint_cell)
+        cell.building_id = building_id
+        if bool(definition.get("blocks_movement", false)):
+            cell.walkable = false
     job.status = "complete"
     job.claimed_by_unit_id = unit.id
     unit.current_job_id = ""
@@ -650,8 +1600,9 @@ func _resource_type_for_job(job_type: String) -> String:
     return ""
 
 func _cleanup_completed_jobs() -> void:
-    # Keep completed jobs in the canonical snapshot for replay/debug auditing.
-    pass
+    for job_id in job_board.sorted_job_ids():
+        if job_board.jobs[job_id].status == "complete":
+            job_board.jobs.erase(job_id)
 
 func canonical_snapshot() -> Dictionary:
     return {
@@ -665,6 +1616,7 @@ func canonical_snapshot() -> Dictionary:
         "items": _object_snapshot(items),
         "stockpiles": _object_snapshot(stockpiles),
         "constructions": _object_snapshot(constructions),
+        "workshop_orders": _workshop_orders_snapshot(),
         "jobs": job_board.to_canonical_array(),
         "command_queue": _command_queue_snapshot(),
     }
@@ -690,6 +1642,12 @@ func _object_snapshot(source: Dictionary) -> Array:
     var arr: Array = []
     for id in _sorted_ids(source):
         arr.append(source[id].to_canonical_dict())
+    return arr
+
+func _workshop_orders_snapshot() -> Array:
+    var arr: Array = []
+    for id in _sorted_ids(workshop_orders):
+        arr.append(_sorted_dictionary(workshop_orders[id].duplicate(true)))
     return arr
 
 func _command_queue_snapshot() -> Array:
@@ -727,4 +1685,10 @@ func _sorted_array(input: Array) -> Array:
             output.append(_sorted_array(value))
         else:
             output.append(value)
+    return output
+
+func _serialize_cells(cells: Array) -> Array:
+    var output: Array = []
+    for cell in ZoneScript.canonical_cells(cells):
+        output.append([cell.x, cell.y])
     return output

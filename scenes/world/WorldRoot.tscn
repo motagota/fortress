@@ -9,7 +9,17 @@ script = ExtResource("1_world_renderer")
 
 [node name="Resources" type="Node3D" parent="."]
 
+[node name="Buildings" type="Node3D" parent="."]
+
+[node name="Stockpiles" type="Node3D" parent="."]
+
+[node name="StockpilePreview" type="Node3D" parent="."]
+
+[node name="StockpileResizeHandles" type="Node3D" parent="."]
+
 [node name="Designations" type="Node3D" parent="."]
+
+[node name="Hover" type="Node3D" parent="."]
 
 [node name="Units" type="Node3D" parent="."]
 

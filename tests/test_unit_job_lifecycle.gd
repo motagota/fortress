@@ -51,18 +51,17 @@ func _item_exists_at(sim:, item_type: String, pos: Vector2i) -> bool:
     return false
 
 
-func _step_until_all_complete(sim:, job_ids: Array, max_steps: int = 80) -> int:
+func _step_until_jobs_removed(sim:, job_ids: Array, max_steps: int = 80) -> int:
     var steps := 0
     for _i in range(max_steps):
         steps += 1
         sim.step_tick()
-        var all_done := true
+        var all_removed := true
         for jid in job_ids:
-            var job: SimJob = sim.job_board.jobs.get(jid)
-            if job == null or job.status != "complete":
-                all_done = false
+            if sim.job_board.jobs.has(jid):
+                all_removed = false
                 break
-        if all_done:
+        if all_removed:
             break
     return steps
 
@@ -91,12 +90,11 @@ func _test_unit_claims_and_completes_chop_tree() -> bool:
     ok = _assert(sim.job_board.jobs.has(job_id), "job_000001 must exist after single chop designation") and ok
 
     # Step until the chop job completes
-    var steps := _step_until_all_complete(sim, [job_id], 80)
+    var steps := _step_until_jobs_removed(sim, [job_id], 80)
     ok = _assert(steps < 80, "chop job must complete within 80 ticks (took %d)" % steps) and ok
 
-    # Assert: job is complete
-    var job: SimJob = sim.job_board.jobs[job_id]
-    ok = _assert(job.status == "complete", "chop job status must be 'complete', got '%s'" % job.status) and ok
+    # Assert: job is complete and removed from live board
+    ok = _assert(not sim.job_board.jobs.has(job_id), "completed chop job must be removed from the live job board") and ok
 
     # Assert: wood item exists on the ground at the tree cell
     ok = _assert(_count_items_of_type(sim, "wood") == 1, "chop must produce exactly one wood item") and ok
@@ -121,7 +119,7 @@ func _test_unit_claims_and_completes_chop_tree() -> bool:
 func _test_unit_claims_and_completes_gather_stone() -> bool:
     var sim: Simulation = Simulation.new()
     sim.initialize_new_game(42)
-    var stone_pos := Vector2i(1, 5)
+    var stone_pos := Vector2i(3, 2)
     _place_resource(sim, "res_stone_int", "stone", stone_pos)
 
     sim.queue_command(1, "player_001", "DESIGNATE_GATHER_STONE", stone_pos, {"priority": 3})
@@ -131,10 +129,8 @@ func _test_unit_claims_and_completes_gather_stone() -> bool:
     ok = _assert(sim.job_board.jobs.size() == 1, "GATHER_STONE designation must create exactly one job") and ok
 
     var job_id: String = "job_000001"
-    _step_until_all_complete(sim, [job_id], 80)
-
-    var job: SimJob = sim.job_board.jobs[job_id]
-    ok = _assert(job.status == "complete", "gather-stone job status must be 'complete', got '%s'" % job.status) and ok
+    _step_until_jobs_removed(sim, [job_id], 80)
+    ok = _assert(not sim.job_board.jobs.has(job_id), "completed gather-stone job must be removed from the live job board") and ok
 
     # Assert: stone item on ground
     ok = _assert(_count_items_of_type(sim, "stone") == 1, "gather-stone must produce exactly one stone item") and ok
@@ -163,7 +159,7 @@ func _test_two_units_claim_two_jobs_and_both_complete() -> bool:
 
     # Place a tree near unit start and a stone nearby
     var tree_pos := Vector2i(4, 1)
-    var stone_pos := Vector2i(1, 4)
+    var stone_pos := Vector2i(5, 2)
     _place_resource(sim, "res_tree_dual", "tree", tree_pos)
     _place_resource(sim, "res_stone_dual", "stone", stone_pos)
 
@@ -183,14 +179,12 @@ func _test_two_units_claim_two_jobs_and_both_complete() -> bool:
     ok = _assert(sim.job_board.jobs.has(stone_id), "stone job_000002 must exist") and ok
 
     # Step until both jobs are complete
-    var steps := _step_until_all_complete(sim, [chop_id, stone_id], 120)
+    var steps := _step_until_jobs_removed(sim, [chop_id, stone_id], 120)
     ok = _assert(steps < 120, "both jobs must complete within 120 ticks (took %d)" % steps) and ok
 
-    # -- Both jobs complete --
-    var chop_job: SimJob = sim.job_board.jobs[chop_id]
-    var stone_job: SimJob = sim.job_board.jobs[stone_id]
-    ok = _assert(chop_job.status == "complete", "chop job status must be 'complete', got '%s'" % chop_job.status) and ok
-    ok = _assert(stone_job.status == "complete", "stone job status must be 'complete', got '%s'" % stone_job.status) and ok
+    # -- Both jobs complete and removed --
+    ok = _assert(not sim.job_board.jobs.has(chop_id), "completed chop job must be removed") and ok
+    ok = _assert(not sim.job_board.jobs.has(stone_id), "completed stone job must be removed") and ok
 
     # -- Items on ground --
     ok = _assert(_count_items_of_type(sim, "wood") == 1, "exactly one wood item must exist after chop") and ok
@@ -225,7 +219,7 @@ func _test_unit_walks_to_distant_resource_and_completes() -> bool:
     # Verifies pathfinding: place a resource far from the units' start positions
     var sim: Simulation = Simulation.new()
     sim.initialize_new_game(99)
-    var far_pos := Vector2i(10, 10)
+    var far_pos := Vector2i(10, 3)
     _place_resource(sim, "res_tree_far", "tree", far_pos)
 
     sim.queue_command(1, "player_001", "DESIGNATE_CHOP", far_pos, {"priority": 1})
@@ -235,11 +229,10 @@ func _test_unit_walks_to_distant_resource_and_completes() -> bool:
     ok = _assert(sim.job_board.jobs.size() == 1, "distant chop designation must create one job") and ok
 
     var job_id: String = "job_000001"
-    var steps := _step_until_all_complete(sim, [job_id], 200)
+    var steps := _step_until_jobs_removed(sim, [job_id], 200)
     ok = _assert(steps < 200, "distant chop must complete within 200 ticks (took %d)" % steps) and ok
 
-    var job: SimJob = sim.job_board.jobs[job_id]
-    ok = _assert(job.status == "complete", "distant chop job must be complete") and ok
+    ok = _assert(not sim.job_board.jobs.has(job_id), "completed distant chop job must be removed") and ok
     ok = _assert(_count_items_of_type(sim, "wood") == 1, "distant chop must produce one wood item") and ok
     ok = _assert(_item_exists_at(sim, "wood", far_pos), "wood must appear at the distant cell") and ok
     ok = _assert(sim.world.get_cell(far_pos).resource_id == "", "distant tree cell must be cleared") and ok
@@ -261,23 +254,40 @@ func _test_job_claim_is_atomic_no_double_claim() -> bool:
     ok = _assert(sim.job_board.jobs.size() == 1, "single designation = single job") and ok
 
     var job_id: String = "job_000001"
-    _step_until_all_complete(sim, [job_id], 80)
-
-    var job: SimJob = sim.job_board.jobs[job_id]
-    ok = _assert(job.status == "complete", "single job must complete") and ok
-    ok = _assert(job.claimed_by_unit_id != "", "completed job must have a claimant") and ok
-
-    # Only one unit should have claimed this job
-    var claimants := 0
-    for uid in sim.units.keys():
-        var unit: SimUnit = sim.units[uid]
-        if unit.id == job.claimed_by_unit_id:
-            claimants += 1
-    ok = _assert(claimants == 1, "exactly one unit must be the claimant, found %d" % claimants) and ok
+    _step_until_jobs_removed(sim, [job_id], 80)
+    ok = _assert(not sim.job_board.jobs.has(job_id), "completed single job must be removed") and ok
 
     # Only one wood item produced (no double-claim means no double-produce)
     ok = _assert(_count_items_of_type(sim, "wood") == 1, "single claim must produce exactly one wood") and ok
 
+    return ok
+
+func _test_unreachable_job_is_released_after_short_timeout() -> bool:
+    var sim: Simulation = Simulation.new()
+    sim.initialize_new_game(101)
+    var buried_stone_pos := Vector2i(1, 4)
+    _place_resource(sim, "res_stone_unreachable", "stone", buried_stone_pos)
+    var job_id: String = "job_unreachable"
+    sim.job_board.add_job(SimJob.new(job_id, "GATHER_STONE", buried_stone_pos, 10))
+    var released := false
+    for _i in range(10):
+        sim.step_tick()
+        if sim.job_board.jobs.has(job_id):
+            var job = sim.job_board.jobs[job_id]
+            if job.status == "open" and job.claimed_by_unit_id == "":
+                released = true
+                break
+
+    var ok := true
+    ok = _assert(released, "worker should release an unreachable job after a short stuck timeout") and ok
+    ok = _assert(sim.job_board.jobs.has(job_id), "released unreachable job should stay on the board for another worker or later access") and ok
+    if sim.job_board.jobs.has(job_id):
+        var job = sim.job_board.jobs[job_id]
+        ok = _assert(job.status == "open", "released unreachable job should return to open status") and ok
+        ok = _assert(job.claimed_by_unit_id == "", "released unreachable job should clear claimed_by_unit_id") and ok
+    for uid in sim.units.keys():
+        var unit: SimUnit = sim.units[uid]
+        ok = _assert(unit.current_job_id != job_id, "no worker should still hold the released unreachable job") and ok
     return ok
 
 
@@ -290,4 +300,5 @@ func run() -> bool:
     ok = _test_two_units_claim_two_jobs_and_both_complete() and ok
     ok = _test_unit_walks_to_distant_resource_and_completes() and ok
     ok = _test_job_claim_is_atomic_no_double_claim() and ok
+    ok = _test_unreachable_job_is_released_after_short_timeout() and ok
     return ok

@@ -4,6 +4,7 @@ const JobBoard = preload("res://scripts/simulation/job_board.gd")
 const SimJob = preload("res://scripts/simulation/job.gd")
 const SimUnit = preload("res://scripts/simulation/unit.gd")
 const SimulationScript = preload("res://scripts/simulation/simulation.gd")
+const ItemScript = preload("res://scripts/simulation/item.gd")
 
 func _assert(cond: bool, message: String) -> bool:
     if not cond:
@@ -17,6 +18,8 @@ func run() -> bool:
     ok = _test_unit_job_type_priorities_override_distance_for_allowed_jobs() and ok
     ok = _test_unit_job_priorities_are_canonical_and_configurable() and ok
     ok = _test_simulation_command_sets_unit_job_type_priority() and ok
+    ok = _test_hungry_worker_eats_food_from_storage() and ok
+    ok = _test_hungry_worker_does_not_eat_unstored_food() and ok
     ok = _test_distance_tiebreaking_two_units_two_jobs() and ok
     ok = _test_duplicate_designation_same_tree_creates_one_job() and ok
     ok = _test_duplicate_designation_same_stone_creates_one_job() and ok
@@ -85,6 +88,35 @@ func _test_simulation_command_sets_unit_job_type_priority() -> bool:
     var ok: bool = true
     ok = _assert(unit.get_job_type_priority("HAUL_ITEM") == 10, "SET_UNIT_JOB_PRIORITY command should update the target unit's job-type priority") and ok
     ok = _assert(sim.canonical_snapshot()["units"][0]["job_type_priorities"].get("HAUL_ITEM", -1) == 10, "unit priority command should affect canonical simulation state") and ok
+    return ok
+
+func _test_hungry_worker_eats_food_from_storage() -> bool:
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(1235)
+    var stockpile_id: String = sim.create_stockpile([Vector2i(4, 4)], ["food"], "storage")
+    var food = ItemScript.new("item_stored_food", "food", 2, Vector2i(4, 4))
+    food.stockpile_id = stockpile_id
+    sim.items[food.id] = food
+    sim.units["unit_000001"].needs["hunger"] = SimulationScript.HUNGER_EAT_THRESHOLD - 1
+
+    sim.step_tick()
+
+    var ok: bool = true
+    ok = _assert(sim.units["unit_000001"].needs["hunger"] == SimulationScript.HUNGER_AFTER_EATING, "hungry unit should reset hunger after eating stored food") and ok
+    ok = _assert(sim.items["item_stored_food"].quantity == 1, "eating should consume one food from the stored stack") and ok
+    return ok
+
+func _test_hungry_worker_does_not_eat_unstored_food() -> bool:
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(1236)
+    sim.items["item_loose_food"] = ItemScript.new("item_loose_food", "food", 1, Vector2i(4, 4))
+    sim.units["unit_000001"].needs["hunger"] = SimulationScript.HUNGER_EAT_THRESHOLD - 1
+
+    sim.step_tick()
+
+    var ok: bool = true
+    ok = _assert(sim.units["unit_000001"].needs["hunger"] == SimulationScript.HUNGER_EAT_THRESHOLD, "hungry unit should not eat food that is not in storage") and ok
+    ok = _assert(sim.items.has("item_loose_food"), "unstored loose food should not be consumed by hunger") and ok
     return ok
 
 func _test_distance_tiebreaking_two_units_two_jobs() -> bool:
