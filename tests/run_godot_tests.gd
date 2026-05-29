@@ -25,6 +25,7 @@ const TESTS := [
 func _initialize() -> void:
     var failures: int = 0
     for test_path in TESTS:
+        print("Running ", test_path)
         var script: Resource = load(test_path)
         if script == null:
             push_error("Could not load " + test_path)

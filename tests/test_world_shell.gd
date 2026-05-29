@@ -25,24 +25,21 @@ func run() -> bool:
     ok = _assert(scene.get_node_or_null("Camera3D") != null, "Main scene must include Camera3D") and ok
     ok = _assert(scene.get_node_or_null("DirectionalLight3D") != null, "Main scene must include DirectionalLight3D") and ok
     ok = _assert(scene.get_node_or_null("GameHud") != null, "Main scene must include GameHud") and ok
+    ok = _assert(scene.get_node_or_null("GameHud/WorldgenDiagnosticsPanel") != null, "GameHud must include the read-only worldgen diagnostics panel") and ok
     var sim = SimulationScript.new()
     sim.initialize_new_game(42)
     var snapshot_before: Dictionary = sim.canonical_snapshot()
     scene.sync_from_simulation(sim)
     var world_root: Node = scene.get_node("WorldRoot")
-    var terrain: Node = scene.get_node("WorldRoot/Terrain")
+    var chunk_volume: Node = scene.get_node("WorldRoot/ChunkVolume")
     var resources: Node = scene.get_node("WorldRoot/Resources")
     var designations: Node = scene.get_node("WorldRoot/Designations")
     var units: Node = scene.get_node("WorldRoot/Units")
     var labels: Node = scene.get_node("WorldRoot/DebugLabels")
-    ok = _assert(terrain.get_child_count() == 256, "visual shell must draw a 16x16 terrain grid from sim world cells") and ok
-    var surface_tile: Node3D = terrain.get_node_or_null("Tile_00_00") as Node3D
-    var deep_tile: Node3D = terrain.get_node_or_null("Tile_00_13") as Node3D
-    ok = _assert(surface_tile != null and deep_tile != null, "terrain should expose stable tile nodes for surface and deep layers") and ok
-    if surface_tile != null and deep_tile != null:
-        ok = _assert(deep_tile.position.y < surface_tile.position.y, "deeper generated layers should render lower than surface terrain") and ok
-        ok = _assert(absf(deep_tile.position.z - surface_tile.position.z) < 0.001, "first row of each generated layer should render directly below the surface row") and ok
-    ok = _assert(resources.get_child_count() == sim.canonical_snapshot()["resources"].size(), "visual shell must draw one blockout resource per sim resource") and ok
+    ok = _assert(chunk_volume.get_child_count() > 0 and chunk_volume.get_child_count() <= 16, "visual shell must draw the 16x16x16 chunk volume as greedy material meshes") and ok
+    ok = _assert(chunk_volume.get_node_or_null("ChunkCell_00_15_00") == null, "chunk volume should not expose old per-cell chunk nodes") and ok
+    ok = _assert(chunk_volume.get_node_or_null("ChunkMesh_GRASS") != null, "chunk volume should expose stable material mesh nodes") and ok
+    ok = _assert(resources.get_child_count() == sim.canonical_snapshot()["resources"].size(), "visual shell must draw one scatter resource group per sim resource") and ok
     ok = _assert(designations != null, "WorldRoot must provide a Designations container for pending job markers") and ok
     var tree_resource_id: String = ""
     for resource in sim.canonical_snapshot()["resources"]:
@@ -50,7 +47,7 @@ func run() -> bool:
             tree_resource_id = resource["id"]
             break
     ok = _assert(tree_resource_id != "", "seeded fixture should include at least one tree resource") and ok
-    ok = _assert(world_root.get_node_or_null("Resources/TreeCube_" + tree_resource_id) != null, "tree resources must be named TreeCube_<resource id> blockouts (for example TreeCube_resource_000001 when that id is a tree)") and ok
+    ok = _assert(world_root.get_node_or_null("Resources/TreeScatter_" + tree_resource_id) != null, "tree resources must be named TreeScatter_<resource id> scatter groups") and ok
     ok = _assert(units.get_child_count() == 3, "visual shell must spawn one UnitView per sim unit") and ok
     ok = _assert(units.get_child(0).get_node_or_null("Label3D") != null, "unit blockouts may expose debug Label3D nodes") and ok
     ok = _assert(labels != null, "WorldRoot must provide a DebugLabels container for optional presentation-only labels") and ok
@@ -67,12 +64,12 @@ func _test_resource_visuals_update_after_depletion(scene: Node, sim, resource_id
     var ok: bool = true
     var resource_block_name: String = _resource_node_name(sim.resources[resource_id])
     var resource_position: Array = sim.resources[resource_id]["position"]
-    ok = _assert(scene.get_node_or_null("WorldRoot/Resources/" + resource_block_name) != null, "precondition: resource block must exist before the sim resource is depleted") and ok
+    ok = _assert(scene.get_node_or_null("WorldRoot/Resources/" + resource_block_name) != null, "precondition: resource scatter group must exist before the sim resource is depleted") and ok
     _deplete_resource(sim, resource_id)
     scene.sync_from_simulation(sim)
     var resources_root: Node = scene.get_node("WorldRoot/Resources")
     ok = _assert(not sim.resources.has(resource_id), "precondition: sim resource should be depleted and removed by the completed job") and ok
-    ok = _assert(resources_root.get_node_or_null(resource_block_name) == null, "depleted resources must no longer keep their old block visual: " + resource_block_name) and ok
+    ok = _assert(resources_root.get_node_or_null(resource_block_name) == null, "depleted resources must no longer keep their old scatter visual: " + resource_block_name) and ok
     ok = _assert(_find_resource_visual_at(resources_root, resource_position) == null, "resource visuals must clear or update the previous occupied cell after depletion") and ok
     return ok
 
@@ -97,9 +94,9 @@ func _test_designation_overlay_updates_after_job_lifecycle(scene: Node, sim) -> 
     sim.step_tick()
     scene.sync_from_simulation(sim)
     var designations_root: Node = scene.get_node("WorldRoot/Designations")
-    ok = _assert(designations_root.get_child_count() == 1, "pending/open resource jobs must create one visible designation marker") and ok
-    var marker: Node = designations_root.get_child(0) if designations_root.get_child_count() > 0 else null
-    ok = _assert(marker != null and marker.name.begins_with("Designation_job_"), "designation marker should have a stable Designation_<job id> name") and ok
+    ok = _assert(designations_root.get_child_count() == 1, "pending/open resource jobs must create one batched designation mesh") and ok
+    var marker: Node = designations_root.get_node_or_null("JobDesignationMesh")
+    ok = _assert(marker != null and marker is MeshInstance3D, "designation markers should render through the stable JobDesignationMesh batch") and ok
     var guard: int = 0
     while sim.resources.has(resource_id) and guard < 128:
         sim.step_tick()
@@ -118,14 +115,15 @@ func _test_new_items_are_rendered(scene: Node, sim) -> bool:
     ok = _assert(items_root != null, "WorldRoot must expose an Items container for presentation-only item blockouts/icons") and ok
     if items_root == null:
         return ok
-    ok = _assert(items_root.get_child_count() == sim.canonical_snapshot()["items"].size(), "world shell must draw one simple item visual per simulation item") and ok
+    ok = _assert(items_root.get_child_count() == 1, "world shell must draw loose items through one batched collection mesh") and ok
+    var item_mesh_node: MeshInstance3D = items_root.get_node_or_null("ItemCollectionMesh") as MeshInstance3D
+    ok = _assert(item_mesh_node != null and item_mesh_node.mesh is ArrayMesh, "item visuals must use the stable ItemCollectionMesh batch") and ok
+    var item_bounds: AABB = item_mesh_node.get_aabb() if item_mesh_node != null else AABB()
     for item_data in sim.canonical_snapshot()["items"]:
-        var item_node: Node = items_root.get_node_or_null("Item_" + item_data["id"])
-        ok = _assert(item_node != null, "item visuals must use stable names Item_<item id>; missing Item_" + item_data["id"]) and ok
-        if item_node is Node3D:
+        if item_mesh_node != null:
             var item_cell := Vector2i(int(item_data["position"][0]), int(item_data["position"][1]))
             var expected_position = Vector3(item_cell.x, _surface_y_for_sim_cell(sim, item_cell) + 0.18, _render_z_for_sim_cell(sim, item_cell))
-            ok = _assert(_approx_vec3((item_node as Node3D).position, expected_position), "item visual must be positioned at its simulation cell for " + item_data["id"]) and ok
+            ok = _assert(item_bounds.has_point(expected_position), "item collection mesh must include the simulation cell for " + item_data["id"]) and ok
     return ok
 
 func _test_units_stay_synced_after_ticks(scene: Node, sim) -> bool:
@@ -180,10 +178,10 @@ func _advance_until_any_unit_leaves_initial_state(sim) -> void:
 func _resource_node_name(resource: Dictionary) -> String:
     match resource["type"]:
         "stone":
-            return "StoneCube_" + resource["id"]
+            return "StoneScatter_" + resource["id"]
         "berry":
-            return "BerryCube_" + resource["id"]
-    return "TreeCube_" + resource["id"]
+            return "BerryScatter_" + resource["id"]
+    return "TreeScatter_" + resource["id"]
 
 func _find_resource_visual_at(resources_root: Node, position: Array) -> Node:
     var expected_x: float = float(position[0])
@@ -191,7 +189,7 @@ func _find_resource_visual_at(resources_root: Node, position: Array) -> Node:
     for child in resources_root.get_children():
         if child is Node3D:
             var child_position: Vector3 = (child as Node3D).position
-            if absf(child_position.x - expected_x) < 0.001 and absf(child_position.z - expected_z) < 0.001:
+            if absf(child_position.x - expected_x) < 0.15 and absf(child_position.z - expected_z) < 0.15:
                 return child
     return null
 

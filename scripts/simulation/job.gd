@@ -4,6 +4,7 @@ extends RefCounted
 var id: String
 var type: String
 var target_cell: Vector2i
+var target_world_cell: Vector3i
 var required_skill: String = "labor"
 var required_items: Dictionary = {}
 var produced_items: Dictionary = {}
@@ -16,6 +17,7 @@ func _init(pid: String = "", ptype: String = "CHOP_TREE", ptarget: Vector2i = Ve
     id = pid
     type = ptype
     target_cell = ptarget
+    target_world_cell = Vector3i(ptarget.x, 0, ptarget.y)
     priority = ppriority
     match type:
         "CHOP_TREE":
@@ -62,6 +64,7 @@ func to_canonical_dict() -> Dictionary:
         "id": id,
         "type": type,
         "target_cell": [target_cell.x, target_cell.y],
+        "target_world_cell": [target_world_cell.x, target_world_cell.y, target_world_cell.z],
         "required_skill": required_skill,
         "required_items": required_items,
         "produced_items": produced_items,

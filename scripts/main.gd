@@ -10,6 +10,7 @@ const TOOL_MODE_GATHER_FOOD := "gather_food"
 const TOOL_MODE_MINE := "mine"
 const TOOL_MODE_DESIGNATE_STOCKPILE := "designate_stockpile"
 const TOOL_MODE_PLACE_KITCHEN := "place_kitchen"
+const INVALID_WORLD_CELL := Vector3i(-2147483648, -2147483648, -2147483648)
 const TOOL_MODES: Array[String] = [
     TOOL_MODE_INSPECT,
     TOOL_MODE_GATHER_WOOD,
@@ -27,8 +28,8 @@ const TOOL_MODES: Array[String] = [
 var simulation: Simulation
 var sim_clock: SimClock
 var active_tool_mode: String = TOOL_MODE_INSPECT
-var _stockpile_drag_start: Vector2i = Vector2i(-1, -1)
-var _stockpile_drag_current: Vector2i = Vector2i(-1, -1)
+var _stockpile_drag_start: Vector3i = INVALID_WORLD_CELL
+var _stockpile_drag_current: Vector3i = INVALID_WORLD_CELL
 var _is_stockpile_dragging: bool = false
 var selected_stockpile_id: String = ""
 var selected_workshop_id: String = ""
@@ -56,14 +57,14 @@ func _unhandled_input(event: InputEvent) -> void:
     if event is InputEventMouseButton:
         var mouse_event := event as InputEventMouseButton
         if mouse_event.button_index == MOUSE_BUTTON_LEFT and active_tool_mode in [TOOL_MODE_DESIGNATE_STOCKPILE, TOOL_MODE_PLACE_KITCHEN, TOOL_MODE_MINE]:
-            var target_cell: Vector2i = _pick_grid_cell_from_mouse_position(mouse_event.position)
+            var target_cell: Vector3i = _pick_world_cell_from_mouse_position(mouse_event.position)
             if mouse_event.pressed:
                 _begin_stockpile_drag(target_cell)
             else:
                 _finish_stockpile_drag(target_cell)
             return
         if mouse_event.pressed and mouse_event.button_index == MOUSE_BUTTON_LEFT:
-            var target_cell: Vector2i = _pick_grid_cell_from_mouse_position(mouse_event.position)
+            var target_cell: Vector3i = _pick_world_cell_from_mouse_position(mouse_event.position)
             if active_tool_mode == TOOL_MODE_INSPECT:
                 _handle_inspect_click(target_cell)
                 return
@@ -71,19 +72,19 @@ func _unhandled_input(event: InputEvent) -> void:
         return
     if event is InputEventMouseMotion and _is_stockpile_dragging:
         var motion_event := event as InputEventMouseMotion
-        var target_cell: Vector2i = _pick_grid_cell_from_mouse_position(motion_event.position)
+        var target_cell: Vector3i = _pick_world_cell_from_mouse_position(motion_event.position)
         _refresh_hover_cell(target_cell)
         _update_stockpile_drag(target_cell)
         return
     if event is InputEventMouseMotion and active_tool_mode == TOOL_MODE_PLACE_KITCHEN:
         var motion_event := event as InputEventMouseMotion
-        var target_cell: Vector2i = _pick_grid_cell_from_mouse_position(motion_event.position)
+        var target_cell: Vector3i = _pick_world_cell_from_mouse_position(motion_event.position)
         _refresh_hover_cell(target_cell)
         _refresh_kitchen_hover_preview(target_cell)
         return
     if event is InputEventMouseMotion:
         var motion_event := event as InputEventMouseMotion
-        _refresh_hover_cell(_pick_grid_cell_from_mouse_position(motion_event.position))
+        _refresh_hover_cell(_pick_world_cell_from_mouse_position(motion_event.position))
         return
     if not (event is InputEventKey):
         return
@@ -95,6 +96,8 @@ func _unhandled_input(event: InputEvent) -> void:
             _toggle_jobs_panel()
         KEY_W:
             _toggle_workers_panel()
+        KEY_D:
+            _toggle_worldgen_diagnostics_panel()
         KEY_1:
             set_active_tool_mode(TOOL_MODE_INSPECT)
         KEY_2:
@@ -128,50 +131,68 @@ func _toggle_workers_panel() -> void:
         if simulation != null and hud.has_method("sync_from_simulation"):
             hud.sync_from_simulation(simulation)
 
+func _toggle_worldgen_diagnostics_panel() -> void:
+    _resolve_child_nodes()
+    if hud != null and hud.has_method("toggle_worldgen_diagnostics_panel"):
+        hud.toggle_worldgen_diagnostics_panel()
+        if simulation != null and hud.has_method("sync_from_simulation"):
+            hud.sync_from_simulation(simulation)
+
 func _pick_grid_cell_from_mouse_position(mouse_position: Vector2) -> Vector2i:
+    var world_cell: Vector3i = _pick_world_cell_from_mouse_position(mouse_position)
+    if world_cell == INVALID_WORLD_CELL or simulation == null:
+        return Vector2i(-1, -1)
+    return simulation.projected_cell_for_world_cell(world_cell)
+
+func _pick_world_cell_from_mouse_position(mouse_position: Vector2) -> Vector3i:
     _resolve_child_nodes()
     if camera == null or world_root == null or simulation == null or simulation.world == null:
-        return Vector2i(-1, -1)
-    if not world_root.has_method("ray_to_grid_cell"):
-        return Vector2i(-1, -1)
+        return INVALID_WORLD_CELL
     var ray_origin: Vector3 = camera.project_ray_origin(mouse_position)
     var ray_direction: Vector3 = camera.project_ray_normal(mouse_position)
-    return world_root.ray_to_grid_cell(ray_origin, ray_direction, simulation.world)
+    if world_root.has_method("ray_to_world_cell"):
+        return world_root.ray_to_world_cell(ray_origin, ray_direction, simulation.world)
+    if not world_root.has_method("ray_to_grid_cell"):
+        return INVALID_WORLD_CELL
+    var projected_cell: Vector2i = world_root.ray_to_grid_cell(ray_origin, ray_direction, simulation.world)
+    if projected_cell == Vector2i(-1, -1):
+        return INVALID_WORLD_CELL
+    return simulation.world_cell_for_projected_cell(projected_cell)
 
-func _handle_grid_cell_designation(target_cell: Vector2i) -> Dictionary:
+func _handle_grid_cell_designation(target_cell: Vector3i) -> Dictionary:
     if active_tool_mode == TOOL_MODE_INSPECT:
         return {"valid": false, "warning": "", "command_type": ""}
     if simulation == null:
         return {"valid": false, "warning": "Simulation is not ready", "command_type": ""}
     var result: Dictionary
     if active_tool_mode == TOOL_MODE_DESIGNATE_STOCKPILE:
-        result = simulation.queue_stockpile_designation_command(simulation.tick + 1, "player_001", target_cell, ["wood", "stone", "dirt", "food", "meal"])
+        result = simulation.queue_stockpile_world_designation_command(simulation.tick + 1, "player_001", target_cell, ["wood", "stone", "dirt", "food", "meal"])
     elif active_tool_mode == TOOL_MODE_PLACE_KITCHEN:
         result = _handle_kitchen_cells_designation(target_cell, _kitchen_cells_from_seed(target_cell))
     elif active_tool_mode == TOOL_MODE_MINE:
         result = _handle_mine_cells_designation(target_cell, [target_cell])
     else:
-        result = simulation.queue_designation_command(simulation.tick + 1, "player_001", active_tool_mode, target_cell, {"priority": 5})
+        result = simulation.queue_designation_world_command(simulation.tick + 1, "player_001", active_tool_mode, target_cell, {"priority": 5})
     if not bool(result["valid"]):
         _show_designation_warning(str(result["warning"]))
     return result
 
-func _handle_kitchen_cells_designation(target_cell: Vector2i, cells: Array) -> Dictionary:
+func _handle_kitchen_cells_designation(target_cell: Vector3i, cells: Array) -> Dictionary:
     if simulation == null:
         return {"valid": false, "warning": "Simulation is not ready", "command_type": ""}
-    var center_cell: Vector2i = _center_cell_for_cells(cells, target_cell)
-    var result: Dictionary = simulation.queue_blueprint_command(simulation.tick + 1, "player_001", "kitchen", center_cell, {
+    var center_cell: Vector3i = _center_world_cell_for_cells(cells, target_cell)
+    var result: Dictionary = simulation.queue_blueprint_world_command(simulation.tick + 1, "player_001", "kitchen", center_cell, {
         "priority": 5,
-        "cells": _serialize_cells(cells),
+        "world_cells": _serialize_world_cells(cells),
     })
     if not bool(result["valid"]):
         _show_designation_warning(str(result["warning"]))
     return result
 
-func _handle_stockpile_cells_designation(target_cell: Vector2i, cells: Array) -> Dictionary:
+func _handle_stockpile_cells_designation(target_cell: Vector3i, cells: Array) -> Dictionary:
     if simulation == null:
         return {"valid": false, "warning": "Simulation is not ready", "command_type": ""}
-    var result: Dictionary = simulation.queue_stockpile_designation_command(
+    var result: Dictionary = simulation.queue_stockpile_world_designation_command(
         simulation.tick + 1,
         "player_001",
         target_cell,
@@ -182,13 +203,13 @@ func _handle_stockpile_cells_designation(target_cell: Vector2i, cells: Array) ->
         _show_designation_warning(str(result["warning"]))
     return result
 
-func _handle_mine_cells_designation(target_cell: Vector2i, cells: Array) -> Dictionary:
+func _handle_mine_cells_designation(target_cell: Vector3i, cells: Array) -> Dictionary:
     if simulation == null:
         return {"valid": false, "warning": "Simulation is not ready", "command_type": ""}
     var queued: int = 0
     var last_warning: String = "Select grass, dirt, or a surface rock to mine"
     for cell in cells:
-        var result: Dictionary = simulation.queue_designation_command(simulation.tick + 1, "player_001", TOOL_MODE_MINE, cell, {"priority": 5})
+        var result: Dictionary = simulation.queue_designation_world_command(simulation.tick + 1, "player_001", TOOL_MODE_MINE, cell, {"priority": 5})
         if bool(result.get("valid", false)):
             queued += 1
         else:
@@ -196,9 +217,9 @@ func _handle_mine_cells_designation(target_cell: Vector2i, cells: Array) -> Dict
     if queued == 0:
         _show_designation_warning(last_warning)
         return {"valid": false, "warning": last_warning, "command_type": "DESIGNATE_MINE"}
-    return {"valid": true, "warning": "", "command_type": "DESIGNATE_MINE", "queued": queued, "target_cell": [target_cell.x, target_cell.y]}
+    return {"valid": true, "warning": "", "command_type": "DESIGNATE_MINE", "queued": queued, "target_world_cell": [target_cell.x, target_cell.y, target_cell.z]}
 
-func _handle_stockpile_selection_or_resize(target_cell: Vector2i) -> Dictionary:
+func _handle_stockpile_selection_or_resize(target_cell: Vector3i) -> Dictionary:
     if simulation == null:
         return {"valid": false, "warning": "Simulation is not ready", "command_type": ""}
     if selected_stockpile_id != "":
@@ -214,19 +235,19 @@ func _handle_stockpile_selection_or_resize(target_cell: Vector2i) -> Dictionary:
             if not bool(result["valid"]):
                 _show_designation_warning(str(result["warning"]))
             return result
-    var stockpile_id: String = simulation.find_stockpile_at_cell(target_cell)
+    var stockpile_id: String = simulation.find_stockpile_at_world_cell(target_cell)
     _set_selected_stockpile_id(stockpile_id)
     sync_from_simulation(simulation)
     return {"valid": stockpile_id != "", "warning": "", "stockpile_id": stockpile_id}
 
-func _handle_inspect_click(target_cell: Vector2i) -> Dictionary:
+func _handle_inspect_click(target_cell: Vector3i) -> Dictionary:
     var stockpile_result: Dictionary = _handle_stockpile_selection_or_resize(target_cell)
     if bool(stockpile_result.get("valid", false)):
         _set_selected_workshop({})
         return stockpile_result
     if simulation == null:
         return {"valid": false, "warning": "Simulation is not ready"}
-    var workshop: Dictionary = simulation.find_workshop_at_cell(target_cell)
+    var workshop: Dictionary = simulation.find_workshop_at_world_cell(target_cell)
     _set_selected_workshop(workshop)
     if not workshop.is_empty():
         _set_selected_stockpile_id("")
@@ -257,59 +278,62 @@ func _adjust_layer_cutaway(delta: int) -> void:
     sync_from_simulation(simulation)
 
 func _set_layer_cutaway_depth(depth: int) -> void:
-    layer_cutaway_depth = clampi(depth, -4, 0)
+    layer_cutaway_depth = clampi(depth, -15, 0)
     _resolve_child_nodes()
     if world_root != null and world_root.has_method("set_layer_cutaway_depth"):
         world_root.set_layer_cutaway_depth(layer_cutaway_depth)
     if hud != null and hud.has_method("set_layer_depth"):
         hud.set_layer_depth(layer_cutaway_depth)
 
-func _refresh_hover_cell(target_cell: Vector2i) -> void:
+func _refresh_hover_cell(target_cell: Vector3i) -> void:
     _resolve_child_nodes()
     if world_root != null and world_root.has_method("set_hover_cell"):
-        world_root.set_hover_cell(target_cell, _hover_target_is_valid(target_cell))
+        world_root.set_hover_cell(_projected_cell_for_world_cell(target_cell), _hover_target_is_valid(target_cell))
 
-func _hover_target_is_valid(target_cell: Vector2i) -> bool:
-    if target_cell == Vector2i(-1, -1):
+func _hover_target_is_valid(target_cell: Vector3i) -> bool:
+    if target_cell == INVALID_WORLD_CELL:
         return false
     if simulation == null:
         return true
     if active_tool_mode in [TOOL_MODE_GATHER_WOOD, TOOL_MODE_GATHER_STONE, TOOL_MODE_GATHER_FOOD, TOOL_MODE_MINE]:
-        return bool(simulation.validate_designation_target(active_tool_mode, target_cell).get("valid", false))
+        return bool(simulation.validate_designation_world_target(active_tool_mode, target_cell).get("valid", false))
     if active_tool_mode == TOOL_MODE_DESIGNATE_STOCKPILE:
-        return bool(simulation.validate_stockpile_designation_target(target_cell).get("valid", false))
+        return bool(simulation.validate_stockpile_world_designation_target(target_cell).get("valid", false))
     if active_tool_mode == TOOL_MODE_PLACE_KITCHEN:
-        return bool(simulation.validate_blueprint_target("kitchen", target_cell, _kitchen_cells_from_seed(target_cell)).get("valid", false))
+        return bool(simulation.validate_blueprint_world_target("kitchen", target_cell, _kitchen_cells_from_seed(target_cell)).get("valid", false))
     return true
 
-func _stockpile_resize_handle_at_cell(target_cell: Vector2i) -> Dictionary:
+func _stockpile_resize_handle_at_cell(target_cell: Vector3i) -> Dictionary:
     if simulation == null or selected_stockpile_id == "":
         return {}
     for handle in simulation.get_stockpile_resize_handles(selected_stockpile_id):
-        var raw_cell: Array = handle.get("cell", [])
-        if raw_cell.size() >= 2 and Vector2i(int(raw_cell[0]), int(raw_cell[1])) == target_cell:
+        var raw_cell: Array = handle.get("world_cell", [])
+        if raw_cell.size() >= 3 and Vector3i(int(raw_cell[0]), int(raw_cell[1]), int(raw_cell[2])) == target_cell:
             return handle
     return {}
 
-func _begin_stockpile_drag(target_cell: Vector2i) -> void:
-    _stockpile_drag_start = target_cell
-    _stockpile_drag_current = target_cell
-    _is_stockpile_dragging = target_cell != Vector2i(-1, -1)
+func _begin_stockpile_drag(target_cell) -> void:
+    var world_cell: Vector3i = _coerce_world_cell(target_cell)
+    _stockpile_drag_start = world_cell
+    _stockpile_drag_current = world_cell
+    _is_stockpile_dragging = world_cell != INVALID_WORLD_CELL
     _refresh_stockpile_preview()
 
-func _update_stockpile_drag(target_cell: Vector2i) -> void:
-    if not _is_stockpile_dragging or target_cell == _stockpile_drag_current:
+func _update_stockpile_drag(target_cell) -> void:
+    var world_cell: Vector3i = _coerce_world_cell(target_cell)
+    if not _is_stockpile_dragging or world_cell == _stockpile_drag_current:
         return
-    _stockpile_drag_current = target_cell
+    _stockpile_drag_current = world_cell
     _refresh_stockpile_preview()
 
-func _finish_stockpile_drag(target_cell: Vector2i) -> Dictionary:
+func _finish_stockpile_drag(target_cell) -> Dictionary:
+    var world_cell: Vector3i = _coerce_world_cell(target_cell)
     if not _is_stockpile_dragging:
         _clear_stockpile_preview()
         return {"valid": false, "warning": "", "command_type": ""}
-    if target_cell != Vector2i(-1, -1):
-        _stockpile_drag_current = target_cell
-    var cells: Array[Vector2i] = _stockpile_drag_cells()
+    if world_cell != INVALID_WORLD_CELL:
+        _stockpile_drag_current = world_cell
+    var cells: Array[Vector3i] = _stockpile_drag_cells()
     var result: Dictionary
     if active_tool_mode == TOOL_MODE_PLACE_KITCHEN:
         if cells.size() == 1:
@@ -320,22 +344,22 @@ func _finish_stockpile_drag(target_cell: Vector2i) -> Dictionary:
     else:
         result = _handle_stockpile_cells_designation(_stockpile_drag_start, cells)
     _is_stockpile_dragging = false
-    _stockpile_drag_start = Vector2i(-1, -1)
-    _stockpile_drag_current = Vector2i(-1, -1)
+    _stockpile_drag_start = INVALID_WORLD_CELL
+    _stockpile_drag_current = INVALID_WORLD_CELL
     _clear_stockpile_preview()
     return result
 
-func _stockpile_drag_cells() -> Array[Vector2i]:
-    if _stockpile_drag_start == Vector2i(-1, -1) or _stockpile_drag_current == Vector2i(-1, -1):
+func _stockpile_drag_cells() -> Array[Vector3i]:
+    if _stockpile_drag_start == INVALID_WORLD_CELL or _stockpile_drag_current == INVALID_WORLD_CELL:
         return []
     var min_x: int = mini(_stockpile_drag_start.x, _stockpile_drag_current.x)
     var max_x: int = maxi(_stockpile_drag_start.x, _stockpile_drag_current.x)
-    var min_y: int = mini(_stockpile_drag_start.y, _stockpile_drag_current.y)
-    var max_y: int = maxi(_stockpile_drag_start.y, _stockpile_drag_current.y)
-    var cells: Array[Vector2i] = []
+    var min_z: int = mini(_stockpile_drag_start.z, _stockpile_drag_current.z)
+    var max_z: int = maxi(_stockpile_drag_start.z, _stockpile_drag_current.z)
+    var cells: Array[Vector3i] = []
     for x in range(min_x, max_x + 1):
-        for y in range(min_y, max_y + 1):
-            cells.append(Vector2i(x, y))
+        for z in range(min_z, max_z + 1):
+            cells.append(Vector3i(x, _stockpile_drag_start.y, z))
     return cells
 
 func _refresh_stockpile_preview() -> void:
@@ -349,38 +373,38 @@ func _refresh_stockpile_preview() -> void:
         if active_tool_mode == TOOL_MODE_PLACE_KITCHEN:
             if cells.size() == 1:
                 cells = _kitchen_cells_from_seed(_stockpile_drag_current)
-            validation = simulation.validate_blueprint_target("kitchen", _center_cell_for_cells(cells, _stockpile_drag_current), cells)
+            validation = simulation.validate_blueprint_world_target("kitchen", _center_world_cell_for_cells(cells, _stockpile_drag_current), cells)
             valid_preview = bool(validation.get("valid", false))
             if not valid_preview:
                 _set_placement_preview_cells(cells, false)
                 return
         elif active_tool_mode == TOOL_MODE_MINE:
-            var valid_mine_cells: Array[Vector2i] = []
+            var valid_mine_cells: Array[Vector3i] = []
             for cell in cells:
-                validation = simulation.validate_designation_target(TOOL_MODE_MINE, cell)
+                validation = simulation.validate_designation_world_target(TOOL_MODE_MINE, cell)
                 if bool(validation.get("valid", false)):
                     valid_mine_cells.append(cell)
             cells = valid_mine_cells
             valid_preview = not cells.is_empty()
         else:
-            validation = simulation.validate_stockpile_designation_cells(cells)
-            cells = validation.get("cells", [])
+            validation = simulation.validate_stockpile_world_designation_cells(cells)
+            cells = validation.get("world_cells", [])
     _set_placement_preview_cells(cells, valid_preview)
 
-func _refresh_kitchen_hover_preview(target_cell: Vector2i) -> void:
+func _refresh_kitchen_hover_preview(target_cell: Vector3i) -> void:
     _resolve_child_nodes()
     if world_root == null:
         return
-    if target_cell == Vector2i(-1, -1):
+    if target_cell == INVALID_WORLD_CELL:
         _set_placement_preview_cells([])
         return
     var cells: Array = _kitchen_cells_from_seed(target_cell)
     var valid_preview: bool = true
     if simulation != null:
-        var validation: Dictionary = simulation.validate_blueprint_target("kitchen", target_cell, cells)
+        var validation: Dictionary = simulation.validate_blueprint_world_target("kitchen", target_cell, cells)
         valid_preview = bool(validation.get("valid", false))
         if valid_preview:
-            cells = validation.get("cells", [])
+            cells = validation.get("world_cells", [])
     _set_placement_preview_cells(cells, valid_preview)
 
 func _set_placement_preview_cells(cells: Array, valid: bool = true) -> void:
@@ -391,31 +415,47 @@ func _set_placement_preview_cells(cells: Array, valid: bool = true) -> void:
     elif world_root.has_method("set_stockpile_preview_cells"):
         world_root.set_stockpile_preview_cells(cells)
 
-func _kitchen_cells_from_seed(seed_cell: Vector2i) -> Array[Vector2i]:
-    var cells: Array[Vector2i] = []
+func _kitchen_cells_from_seed(seed_cell: Vector3i) -> Array[Vector3i]:
+    var cells: Array[Vector3i] = []
     for x in range(seed_cell.x - 1, seed_cell.x + 2):
-        for y in range(seed_cell.y - 1, seed_cell.y + 2):
-            cells.append(Vector2i(x, y))
+        for z in range(seed_cell.z - 1, seed_cell.z + 2):
+            cells.append(Vector3i(x, seed_cell.y, z))
     return cells
 
-func _center_cell_for_cells(cells: Array, fallback: Vector2i) -> Vector2i:
+func _center_world_cell_for_cells(cells: Array, fallback: Vector3i) -> Vector3i:
     if cells.is_empty():
         return fallback
     var min_x: int = cells[0].x
     var max_x: int = cells[0].x
-    var min_y: int = cells[0].y
-    var max_y: int = cells[0].y
+    var min_z: int = cells[0].z
+    var max_z: int = cells[0].z
     for cell in cells:
         min_x = mini(min_x, cell.x)
         max_x = maxi(max_x, cell.x)
-        min_y = mini(min_y, cell.y)
-        max_y = maxi(max_y, cell.y)
-    return Vector2i(int(floor(float(min_x + max_x) * 0.5)), int(floor(float(min_y + max_y) * 0.5)))
+        min_z = mini(min_z, cell.z)
+        max_z = maxi(max_z, cell.z)
+    return Vector3i(int(floor(float(min_x + max_x) * 0.5)), fallback.y, int(floor(float(min_z + max_z) * 0.5)))
 
-func _serialize_cells(cells: Array) -> Array:
+func _projected_cell_for_world_cell(world_cell: Vector3i) -> Vector2i:
+    if world_cell == INVALID_WORLD_CELL or simulation == null:
+        return Vector2i(-1, -1)
+    return simulation.projected_cell_for_world_cell(world_cell)
+
+func _coerce_world_cell(value) -> Vector3i:
+    if value is Vector3i:
+        return value
+    if value is Vector2i and simulation != null:
+        return simulation.world_cell_for_projected_cell(value)
+    if value is Array and value.size() >= 3:
+        return Vector3i(int(value[0]), int(value[1]), int(value[2]))
+    if value is Array and value.size() >= 2 and simulation != null:
+        return simulation.world_cell_for_projected_cell(Vector2i(int(value[0]), int(value[1])))
+    return INVALID_WORLD_CELL
+
+func _serialize_world_cells(cells: Array) -> Array:
     var output: Array = []
     for cell in cells:
-        output.append([cell.x, cell.y])
+        output.append([cell.x, cell.y, cell.z])
     return output
 
 func _clear_stockpile_preview() -> void:

@@ -78,15 +78,13 @@ func test_initial_forest_fixture_shape() -> bool:
             return false
         var pos: Array = resource["position"]
         var cell = sim.world.get_cell(Vector2i(int(pos[0]), int(pos[1])))
-        if not _assert(cell != null and cell.resource_id == id, "resource index must match grid cell resource_id"):
+        if not _assert(cell != null, "resource index positions must stay inside the visible surface bounds"):
             return false
-        var layer: int = _layer_for_depth(int(cell.depth))
-        if resource.get("type", "") in ["tree", "berry"]:
-            if not _assert(layer == 1, "trees and berries must only generate on the surface layer"):
+        if str(cell.resource_id) != "":
+            if not _assert(str(cell.resource_id) == str(id), "legacy surface cell resource_id must match resource index"):
                 return false
-        if resource.get("type", "") == "stone":
-            if not _assert(layer >= 1 and layer <= 3, "surface rocks must only generate in layers 1 through 3"):
-                return false
+        if not _assert(bool(resource.get("surface", false)), "trees, berries, and loose stones must be visible surface scatter"):
+            return false
     return true
 
 func test_gather_berries_creates_food() -> bool:

@@ -10,6 +10,7 @@ const RECIPE_COOK_MEAL := "cook_meal"
 const DEEP_MINING_COLLAPSE_DEPTH := -3
 const DEEP_MINING_COLLAPSE_CHANCE_PERCENT := 25
 const UNREACHABLE_JOB_RELEASE_TICKS := 4
+const INVALID_WORLD_CELL := Vector3i(-2147483648, -2147483648, -2147483648)
 
 const TOOL_MODE_GATHER_WOOD := "gather_wood"
 const TOOL_MODE_GATHER_STONE := "gather_stone"
@@ -26,6 +27,9 @@ const BuildingDefinitionScript := preload("res://scripts/simulation/building_def
 const ConstructionRecordScript := preload("res://scripts/simulation/construction_record.gd")
 const JobScript := preload("res://scripts/simulation/job.gd")
 const JobBoardScript := preload("res://scripts/simulation/job_board.gd")
+const WorldgenDiagnosticsScript := preload("res://scripts/simulation/worldgen_diagnostics.gd")
+const ChunkedWorldReadAdapterScript := preload("res://scripts/simulation/chunked_world_read_adapter.gd")
+const ChunkedWorldStoreScript := preload("res://scripts/simulation/chunked_world_store.gd")
 
 var tick: int = 0
 var world_seed: int = 1
@@ -38,6 +42,9 @@ var constructions: Dictionary = {}
 var workshop_orders: Dictionary = {}
 var resources: Dictionary = {}
 var job_board
+var chunk_world_store
+var chunk_world_import_report: Dictionary = {}
+var projected_direct_sync_hash: String = ""
 var command_queue: Array[Dictionary] = []
 var id_counters: Dictionary = {"unit": 0, "job": 0, "item": 0, "command": 0, "building": 0, "stockpile": 0, "construction": 0, "workshop_order": 0}
 
@@ -60,39 +67,399 @@ func initialize_new_game(seed_value: int = 1) -> void:
     job_board = JobBoardScript.new()
     world = GridWorldScript.new(WORLD_WIDTH, WORLD_HEIGHT)
     world.create_forest(rng_streams["world_rng"], resources)
+    _initialize_authoritative_chunk_world()
     _spawn_initial_units()
+
+func get_worldgen_storage_diagnostics() -> Dictionary:
+    _ensure_authoritative_chunk_world()
+    return WorldgenDiagnosticsScript.build_storage_report_for_store(world, chunk_world_store, chunk_world_import_report)
+
+func log_worldgen_storage_diagnostics() -> Dictionary:
+    var report: Dictionary = get_worldgen_storage_diagnostics()
+    WorldgenDiagnosticsScript.log_report(report)
+    return report
+
+func get_chunked_world_read_adapter():
+    _ensure_authoritative_chunk_world()
+    var adapter = ChunkedWorldReadAdapterScript.new()
+    adapter.use_authoritative_store(world, chunk_world_store, chunk_world_import_report)
+    return adapter
+
+func _initialize_authoritative_chunk_world() -> void:
+    chunk_world_store = ChunkedWorldStoreScript.new(16)
+    chunk_world_import_report = chunk_world_store.import_authoritative_projected_world(world)
+    _sync_projected_world_from_authoritative_chunks()
+    projected_direct_sync_hash = _projected_world_hash()
+
+func _ensure_authoritative_chunk_world() -> void:
+    if chunk_world_store == null:
+        _initialize_authoritative_chunk_world()
+
+func _sync_projected_world_from_authoritative_chunks() -> void:
+    if world == null or chunk_world_store == null:
+        return
+    for z in range(int(world.height)):
+        for x in range(int(world.width)):
+            var pos := Vector2i(x, z)
+            var stored: Dictionary = _stored_chunk_cell_for_projected_cell(pos)
+            if bool(stored.get("valid", false)):
+                _apply_authoritative_payload_to_projected_cell(pos, stored.get("payload", {}))
+
+func _stored_chunk_cell_for_projected_cell(pos: Vector2i) -> Dictionary:
+    if world == null or chunk_world_store == null or not world.in_bounds(pos):
+        return {"valid": false, "reason": "authoritative_chunk_unavailable"}
+    var view: Dictionary = world.get_storage_address_for_projected_cell(pos)
+    if not bool(view.get("valid", false)):
+        return view
+    return chunk_world_store.get_cell(_array_to_vector3i(view.get("world_cell", [])))
+
+func _authoritative_payload_for_projected_cell(pos: Vector2i) -> Dictionary:
+    _ensure_authoritative_chunk_world()
+    var stored: Dictionary = _stored_chunk_cell_for_projected_cell(pos)
+    if bool(stored.get("valid", false)):
+        return stored.get("payload", {}).duplicate(true)
+    return _projected_cell_payload(pos)
+
+func _set_authoritative_payload_for_projected_cell(pos: Vector2i, payload: Dictionary) -> bool:
+    _ensure_authoritative_chunk_world()
+    if world == null or not world.in_bounds(pos):
+        return false
+    var view: Dictionary = world.get_storage_address_for_projected_cell(pos)
+    if not bool(view.get("valid", false)):
+        return false
+    var source: Dictionary = {
+        "projected_cell": view.get("projected_cell", []),
+        "display_cell": view.get("display_cell", []),
+        "projection_depth": int(view.get("projection_depth", 0)),
+        "source_storage_model": str(view.get("storage_model", "")),
+        "authoritative": true,
+    }
+    var result: Dictionary = chunk_world_store.set_cell(_array_to_vector3i(view.get("world_cell", [])), payload, source)
+    if not bool(result.get("valid", false)):
+        return false
+    _apply_authoritative_payload_to_projected_cell(pos, payload)
+    projected_direct_sync_hash = _projected_world_hash()
+    return true
+
+func _projected_cell_payload(pos: Vector2i) -> Dictionary:
+    var cell = world.get_cell(pos) if world != null else null
+    if cell == null:
+        return {}
+    return {
+        "terrain": str(cell.terrain),
+        "material_key": str(cell.material_key),
+        "walkable": bool(cell.walkable),
+        "strata_key": str(cell.strata_key),
+        "mining_tier_required": int(cell.mining_tier_required),
+        "resource_id": str(cell.resource_id),
+        "building_id": str(cell.building_id),
+        "hidden_mine_yield": cell.hidden_mine_yield.duplicate(true),
+        "is_river": bool(cell.is_river),
+        "river_id": str(cell.river_id),
+        "distance_to_river": int(cell.distance_to_river),
+        "water_feature": str(cell.water_feature),
+        "is_cave": bool(cell.is_cave),
+        "cave_id": str(cell.cave_id),
+        "exposure": str(cell.exposure),
+        "surface_height": int(cell.surface_height),
+        "slope_degrees": int(cell.slope_degrees),
+    }
+
+func _apply_authoritative_payload_to_projected_cell(pos: Vector2i, payload: Dictionary) -> void:
+    var cell = world.get_cell(pos) if world != null else null
+    if cell == null:
+        return
+    cell.terrain = str(payload.get("terrain", cell.terrain))
+    cell.material_key = str(payload.get("material_key", cell.material_key))
+    cell.walkable = bool(payload.get("walkable", cell.walkable))
+    cell.strata_key = str(payload.get("strata_key", cell.strata_key))
+    cell.mining_tier_required = int(payload.get("mining_tier_required", cell.mining_tier_required))
+    cell.resource_id = str(payload.get("resource_id", cell.resource_id))
+    cell.building_id = str(payload.get("building_id", cell.building_id))
+    cell.hidden_mine_yield = payload.get("hidden_mine_yield", cell.hidden_mine_yield).duplicate(true)
+    cell.is_river = bool(payload.get("is_river", cell.is_river))
+    cell.river_id = str(payload.get("river_id", cell.river_id))
+    cell.distance_to_river = int(payload.get("distance_to_river", cell.distance_to_river))
+    cell.water_feature = str(payload.get("water_feature", cell.water_feature))
+    cell.is_cave = bool(payload.get("is_cave", cell.is_cave))
+    cell.cave_id = str(payload.get("cave_id", cell.cave_id))
+    cell.exposure = str(payload.get("exposure", cell.exposure))
+    cell.surface_height = int(payload.get("surface_height", cell.surface_height))
+    cell.slope_degrees = int(payload.get("slope_degrees", cell.slope_degrees))
+
+func _clear_resource_authoritative(pos: Vector2i, resource_id: String = "") -> bool:
+    var payload: Dictionary = _authoritative_payload_for_projected_cell(pos)
+    if payload.is_empty():
+        return false
+    if resource_id != "" and str(payload.get("resource_id", "")) != resource_id:
+        var projected_payload: Dictionary = _projected_cell_payload(pos)
+        if str(projected_payload.get("resource_id", "")) != resource_id:
+            return false
+        payload = projected_payload
+    var cell = world.get_cell(pos)
+    payload["resource_id"] = ""
+    payload["material_key"] = world._base_material_for_cell(cell)
+    payload["mining_tier_required"] = world.get_required_mining_tier_for_material(str(payload["material_key"]))
+    return _set_authoritative_payload_for_projected_cell(pos, payload)
+
+func _mine_cell_authoritative(pos: Vector2i) -> bool:
+    var payload: Dictionary = _authoritative_payload_for_projected_cell(pos)
+    if payload.is_empty() or not world.is_mineable_cell(pos):
+        return false
+    payload["terrain"] = GridWorldScript.TERRAIN_EXCAVATED
+    payload["material_key"] = GridWorldScript.MATERIAL_AIR
+    payload["strata_key"] = GridWorldScript.STRATA_SURFACE
+    payload["mining_tier_required"] = GridWorldScript.MINING_TIER_NONE
+    payload["resource_id"] = ""
+    payload["hidden_mine_yield"] = {}
+    return _set_authoritative_payload_for_projected_cell(pos, payload)
+
+func _collapse_cell_authoritative(pos: Vector2i) -> bool:
+    var payload: Dictionary = _authoritative_payload_for_projected_cell(pos)
+    if payload.is_empty():
+        return false
+    payload["terrain"] = GridWorldScript.TERRAIN_COLLAPSED
+    payload["material_key"] = GridWorldScript.MATERIAL_HARD_ROCK
+    payload["strata_key"] = GridWorldScript.STRATA_HARD_ROCK
+    payload["mining_tier_required"] = GridWorldScript.MINING_TIER_HARD_ROCK
+    payload["walkable"] = false
+    payload["resource_id"] = ""
+    payload["hidden_mine_yield"] = {}
+    return _set_authoritative_payload_for_projected_cell(pos, payload)
+
+func _set_building_on_cell_authoritative(pos: Vector2i, building_id: String, blocks_movement: bool) -> bool:
+    var payload: Dictionary = _authoritative_payload_for_projected_cell(pos)
+    if payload.is_empty():
+        return false
+    payload["building_id"] = building_id
+    if blocks_movement:
+        payload["walkable"] = false
+    return _set_authoritative_payload_for_projected_cell(pos, payload)
+
+func _array_to_vector3i(value: Array) -> Vector3i:
+    if value.size() < 3:
+        return Vector3i.ZERO
+    return Vector3i(int(value[0]), int(value[1]), int(value[2]))
+
+func world_cell_for_projected_cell(pos: Vector2i) -> Vector3i:
+    return _world_cell_for_projected_cell(pos)
+
+func projected_cell_for_world_cell(world_cell: Vector3i) -> Vector2i:
+    return _projected_cell_for_world_cell(world_cell)
+
+func _world_cell_for_projected_cell(pos: Vector2i) -> Vector3i:
+    if world == null or not world.in_bounds(pos):
+        return Vector3i(pos.x, 0, pos.y)
+    var view: Dictionary = world.get_storage_address_for_projected_cell(pos)
+    if not bool(view.get("valid", false)):
+        return Vector3i(pos.x, 0, pos.y)
+    return _array_to_vector3i(view.get("world_cell", []))
+
+func _projected_cell_for_world_cell(world_cell: Vector3i) -> Vector2i:
+    if world == null or not world.has_method("get_projected_cell_for_world_cell"):
+        return Vector2i(world_cell.x, world_cell.z)
+    var result: Dictionary = world.get_projected_cell_for_world_cell(world_cell)
+    if not bool(result.get("valid", false)):
+        return Vector2i(-1, -1)
+    var projected_cell: Array = result.get("projected_cell", [])
+    if projected_cell.size() < 2:
+        return Vector2i(-1, -1)
+    return Vector2i(int(projected_cell[0]), int(projected_cell[1]))
+
+func _payload_for_world_cell(world_cell: Vector3i) -> Dictionary:
+    _ensure_authoritative_chunk_world()
+    var stored: Dictionary = chunk_world_store.get_cell(world_cell) if chunk_world_store != null else {}
+    if bool(stored.get("valid", false)):
+        return stored.get("payload", {}).duplicate(true)
+    var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+    if projected_cell == Vector2i(-1, -1):
+        return {}
+    return _projected_cell_payload(projected_cell)
+
+func _sync_projected_direct_mutations_to_authoritative() -> void:
+    if world == null or chunk_world_store == null:
+        return
+    var current_hash: String = _projected_world_hash()
+    if current_hash == projected_direct_sync_hash:
+        return
+    for z in range(int(world.height)):
+        for x in range(int(world.width)):
+            var projected_cell := Vector2i(x, z)
+            var world_cell: Vector3i = _world_cell_for_projected_cell(projected_cell)
+            var stored: Dictionary = chunk_world_store.get_cell(world_cell)
+            if bool(stored.get("valid", false)):
+                _sync_projected_direct_mutation_to_authoritative(world_cell, stored.get("payload", {}))
+    projected_direct_sync_hash = _projected_world_hash()
+
+func _projected_world_hash() -> String:
+    if world == null:
+        return ""
+    return JSON.stringify(world.to_canonical_array()).sha256_text()
+
+func _sync_projected_direct_mutation_to_authoritative(world_cell: Vector3i, stored_payload: Dictionary) -> void:
+    var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+    if projected_cell == Vector2i(-1, -1):
+        return
+    var projected_payload: Dictionary = _projected_cell_payload(projected_cell)
+    if projected_payload.is_empty():
+        return
+    if JSON.stringify(_sorted_dictionary(projected_payload)) == JSON.stringify(_sorted_dictionary(stored_payload)):
+        return
+    var source: Dictionary = {
+        "projected_cell": [projected_cell.x, projected_cell.y],
+        "display_cell": [world_cell.x, world_cell.z],
+        "projection_depth": world_cell.y,
+        "source_storage_model": "legacy_projected_direct_mutation",
+        "authoritative": true,
+    }
+    chunk_world_store.set_cell(world_cell, projected_payload, source)
+
+func _world_cell_key(world_cell: Vector3i) -> String:
+    return "%012d|%012d|%012d" % [world_cell.x, world_cell.y, world_cell.z]
+
+func _world_cells_from_cells(cells: Array) -> Array[Vector3i]:
+    var output: Array[Vector3i] = []
+    for raw_cell in cells:
+        if raw_cell is Vector3i:
+            output.append(raw_cell)
+        elif raw_cell is Vector2i:
+            output.append(_world_cell_for_projected_cell(raw_cell))
+        elif raw_cell is Array and raw_cell.size() >= 3:
+            output.append(Vector3i(int(raw_cell[0]), int(raw_cell[1]), int(raw_cell[2])))
+        elif raw_cell is Array and raw_cell.size() >= 2:
+            output.append(_world_cell_for_projected_cell(Vector2i(int(raw_cell[0]), int(raw_cell[1]))))
+    var unique: Dictionary = {}
+    for world_cell in output:
+        unique[_world_cell_key(world_cell)] = world_cell
+    var keys: Array = unique.keys()
+    keys.sort()
+    var sorted: Array[Vector3i] = []
+    for key in keys:
+        sorted.append(unique[key])
+    return sorted
+
+func _projected_cells_from_world_cells(world_cells: Array) -> Array[Vector2i]:
+    var output: Array[Vector2i] = []
+    for world_cell in _world_cells_from_cells(world_cells):
+        var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+        if projected_cell != Vector2i(-1, -1):
+            output.append(projected_cell)
+    return ZoneScript.canonical_cells(output)
+
+func _configure_unit_world_cell(unit) -> void:
+    if unit != null and unit.has_method("set_projected_position"):
+        unit.set_projected_position(unit.position, _world_cell_for_projected_cell(unit.position))
+
+func _configure_item_world_cell(item) -> void:
+    if item != null and item.has_method("set_projected_position"):
+        item.set_projected_position(item.position, _world_cell_for_projected_cell(item.position))
+
+func _configure_job_world_cell(job) -> void:
+    if job != null:
+        job.target_world_cell = _world_cell_for_projected_cell(job.target_cell)
+
+func _configure_stockpile_world_cells(stockpile) -> void:
+    if stockpile == null or not stockpile.has_method("set_world_cells"):
+        return
+    var world_cells: Array[Vector3i] = []
+    for cell in stockpile.cells:
+        world_cells.append(_world_cell_for_projected_cell(cell))
+    stockpile.set_world_cells(world_cells)
+
+func _configure_construction_world_cells(construction) -> void:
+    if construction == null:
+        return
+    construction.target_world_cell = _world_cell_for_projected_cell(construction.target_cell)
+    var world_cells: Array[Vector3i] = []
+    for cell in construction.cells:
+        world_cells.append(_world_cell_for_projected_cell(cell))
+    construction.world_cells = world_cells
+
+func _set_unit_projected_position(unit, projected_cell: Vector2i) -> void:
+    if unit != null and unit.has_method("set_projected_position"):
+        unit.set_projected_position(projected_cell, _world_cell_for_projected_cell(projected_cell))
+    elif unit != null:
+        unit.position = projected_cell
+
+func _set_item_projected_position(item, projected_cell: Vector2i) -> void:
+    if item != null and item.has_method("set_projected_position"):
+        item.set_projected_position(projected_cell, _world_cell_for_projected_cell(projected_cell))
+    elif item != null:
+        item.position = projected_cell
+
+func _set_unit_world_cell(unit, world_cell: Vector3i) -> void:
+    var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+    if projected_cell == Vector2i(-1, -1):
+        return
+    if unit != null and unit.has_method("set_projected_position"):
+        unit.set_projected_position(projected_cell, world_cell)
+    elif unit != null:
+        unit.position = projected_cell
+
+func _set_item_world_cell(item, world_cell: Vector3i) -> void:
+    var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+    if projected_cell == Vector2i(-1, -1):
+        return
+    if item != null and item.has_method("set_projected_position"):
+        item.set_projected_position(projected_cell, world_cell)
+    elif item != null:
+        item.position = projected_cell
+
+func _create_item_at_projected_cell(item_id: String, item_type: String, quantity: int, projected_cell: Vector2i):
+    var item = ItemScript.new(item_id, item_type, quantity, projected_cell)
+    _configure_item_world_cell(item)
+    return item
+
+func _create_item_at_world_cell(item_id: String, item_type: String, quantity: int, world_cell: Vector3i):
+    var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+    var item = ItemScript.new(item_id, item_type, quantity, projected_cell)
+    if item.has_method("set_projected_position"):
+        item.set_projected_position(projected_cell, world_cell)
+    return item
 
 func _spawn_initial_units() -> void:
     var starts: Array[Vector2i] = [Vector2i(1, 1), Vector2i(2, 1), Vector2i(1, 2)]
     var names: Array[String] = ["Ari", "Bo", "Cy"]
     for i in range(INITIAL_UNIT_COUNT):
         var id: String = allocate_id("unit")
-        units[id] = UnitScript.new(id, names[i], starts[i])
+        var unit = UnitScript.new(id, names[i], starts[i])
+        _configure_unit_world_cell(unit)
+        units[id] = unit
 
 func allocate_id(prefix: String) -> String:
     id_counters[prefix] = int(id_counters.get(prefix, 0)) + 1
     return "%s_%06d" % [prefix, id_counters[prefix]]
 
 func create_stockpile(cells: Array, accepted_item_types: Array, storage_mode: String = "both") -> String:
-    var valid_cells: Array[Vector2i] = _valid_stockpile_cells(cells)
+    return create_stockpile_at_world_cells(_world_cells_from_cells(cells), accepted_item_types, storage_mode)
+
+func create_stockpile_at_world_cells(world_cells: Array, accepted_item_types: Array, storage_mode: String = "both") -> String:
+    var valid_cells: Array[Vector2i] = _valid_stockpile_cells(world_cells)
     if valid_cells.is_empty():
         return ""
     if _cells_overlap_stockpiles(valid_cells):
         return ""
     var id: String = allocate_id("stockpile")
     stockpiles[id] = StockpileScript.new(id, accepted_item_types, valid_cells, storage_mode)
+    stockpiles[id].set_world_cells(_world_cells_from_cells(valid_cells))
     return id
 
 func designate_stockpile(start_cell: Vector2i, payload: Dictionary) -> String:
+    return designate_stockpile_at_world_cell(_world_cell_for_projected_cell(start_cell), _with_world_cells_payload(payload))
+
+func designate_stockpile_at_world_cell(start_world_cell: Vector3i, payload: Dictionary) -> String:
     var accepted_types: Array = payload.get("accepted_item_types", ["wood", "stone", "dirt", "food", "meal"])
-    var cells: Array = payload.get("cells", [start_cell])
+    var cells: Array = payload.get("world_cells", [start_world_cell])
     if cells.is_empty():
-        cells = [start_cell]
-    return create_stockpile(cells, accepted_types, str(payload.get("storage_mode", "both")))
+        cells = [start_world_cell]
+    return create_stockpile_at_world_cells(cells, accepted_types, str(payload.get("storage_mode", "both")))
 
 func find_stockpile_at_cell(target_cell: Vector2i) -> String:
+    return find_stockpile_at_world_cell(_world_cell_for_projected_cell(target_cell))
+
+func find_stockpile_at_world_cell(target_world_cell: Vector3i) -> String:
     for stockpile_id in _sorted_ids(stockpiles):
-        if stockpiles[stockpile_id].contains_cell(target_cell):
+        if stockpiles[stockpile_id].contains_world_cell(target_world_cell):
             return stockpile_id
     return ""
 
@@ -124,8 +491,10 @@ func get_stockpile_resize_handles(stockpile_id: String) -> Array:
 func _append_resize_handle(handles: Array, cell: Vector2i, side: String, delta: int, label: String) -> void:
     if world == null or not world.in_bounds(cell):
         return
+    var world_cell: Vector3i = _world_cell_for_projected_cell(cell)
     handles.append({
         "cell": [cell.x, cell.y],
+        "world_cell": [world_cell.x, world_cell.y, world_cell.z],
         "side": side,
         "delta": delta,
         "label": label,
@@ -135,6 +504,9 @@ func get_building_definition(building_type: String) -> Dictionary:
     return BuildingDefinitionScript.get_definition(building_type)
 
 func find_workshop_at_cell(target_cell: Vector2i) -> Dictionary:
+    return find_workshop_at_world_cell(_world_cell_for_projected_cell(target_cell))
+
+func find_workshop_at_world_cell(target_world_cell: Vector3i) -> Dictionary:
     for construction_id in _sorted_ids(constructions):
         var construction = constructions[construction_id]
         if construction.status != "complete":
@@ -142,8 +514,8 @@ func find_workshop_at_cell(target_cell: Vector2i) -> Dictionary:
         var definition: Dictionary = get_building_definition(construction.type)
         if not bool(definition.get("workshop", false)):
             continue
-        for cell in _construction_cells(construction):
-            if cell == target_cell:
+        for world_cell in _world_cells_from_cells(construction.world_cells):
+            if world_cell == target_world_cell:
                 return _workshop_summary(construction)
     return {}
 
@@ -171,6 +543,20 @@ func validate_workshop_recipe(building_id: String, recipe_id: String) -> Diction
     return {"valid": true, "warning": "", "building_id": building_id, "recipe_id": recipe_id}
 
 func queue_blueprint_command(command_tick: int, player_id: String, building_type: String, target_cell: Vector2i, payload: Dictionary = {}) -> Dictionary:
+    return queue_blueprint_world_command(command_tick, player_id, building_type, _world_cell_for_projected_cell(target_cell), _with_world_cells_payload(payload))
+
+func queue_blueprint_world_command(command_tick: int, player_id: String, building_type: String, target_world_cell: Vector3i, payload: Dictionary = {}) -> Dictionary:
+    var result: Dictionary = validate_blueprint_world_target(building_type, target_world_cell, payload.get("world_cells", payload.get("cells", [])))
+    if not bool(result["valid"]):
+        return result
+    var command_payload: Dictionary = payload.duplicate(true)
+    command_payload["building_type"] = building_type
+    command_payload["cells"] = _serialize_cells(result["cells"])
+    command_payload["world_cells"] = _serialize_world_cells(result["world_cells"])
+    result["command"] = queue_world_command(command_tick, player_id, "PLACE_BLUEPRINT", target_world_cell, command_payload)
+    return result
+
+func _legacy_queue_blueprint_command(command_tick: int, player_id: String, building_type: String, target_cell: Vector2i, payload: Dictionary = {}) -> Dictionary:
     var result: Dictionary = validate_blueprint_target(building_type, target_cell, payload.get("cells", []))
     if not bool(result["valid"]):
         return result
@@ -181,39 +567,53 @@ func queue_blueprint_command(command_tick: int, player_id: String, building_type
     return result
 
 func validate_blueprint_target(building_type: String, target_cell: Vector2i, cells: Array = []) -> Dictionary:
+    _sync_projected_direct_mutations_to_authoritative()
+    return validate_blueprint_world_target(building_type, _world_cell_for_projected_cell(target_cell), _with_world_cells(cells))
+
+func validate_blueprint_world_target(building_type: String, target_world_cell: Vector3i, world_cells: Array = []) -> Dictionary:
+    var target_cell: Vector2i = _projected_cell_for_world_cell(target_world_cell)
+    if target_cell == Vector2i(-1, -1):
+        return {"valid": false, "warning": "Blueprint target is out of bounds", "construction_id": "", "cells": [], "world_cells": []}
     var definition: Dictionary = get_building_definition(building_type)
     if definition.is_empty():
-        return {"valid": false, "warning": "Unknown building type: " + building_type, "construction_id": "", "cells": []}
+        return {"valid": false, "warning": "Unknown building type: " + building_type, "construction_id": "", "cells": [], "world_cells": []}
     var existing_id: String = _find_construction_at(building_type, target_cell)
     if existing_id != "":
         if constructions[existing_id].status == "complete":
-            return {"valid": false, "warning": "Blueprint area already has a building", "construction_id": existing_id, "cells": _construction_cells(constructions[existing_id])}
-        return {"valid": true, "warning": "", "construction_id": existing_id, "cells": _construction_cells(constructions[existing_id])}
-    var footprint_cells: Array[Vector2i] = _building_footprint_cells(building_type, target_cell) if cells.is_empty() else ZoneScript.canonical_cells(cells)
+            return {"valid": false, "warning": "Blueprint area already has a building", "construction_id": existing_id, "cells": _construction_cells(constructions[existing_id]), "world_cells": constructions[existing_id].world_cells}
+        return {"valid": true, "warning": "", "construction_id": existing_id, "cells": _construction_cells(constructions[existing_id]), "world_cells": constructions[existing_id].world_cells}
+    var footprint_cells: Array[Vector2i] = _building_footprint_cells(building_type, target_cell) if world_cells.is_empty() else _projected_cells_from_world_cells(world_cells)
     if footprint_cells.is_empty():
-        return {"valid": false, "warning": "Blueprint target is out of bounds", "construction_id": "", "cells": []}
+        return {"valid": false, "warning": "Blueprint target is out of bounds", "construction_id": "", "cells": [], "world_cells": []}
+    var footprint_world_cells: Array[Vector3i] = _world_cells_from_cells(footprint_cells)
     if not _cells_match_building_footprint(building_type, footprint_cells):
-        return {"valid": false, "warning": "Kitchen needs exactly a clear 3x3 zone", "construction_id": "", "cells": []}
-    for footprint_cell in footprint_cells:
-        var cell = world.get_cell(footprint_cell)
-        if cell == null:
-            return {"valid": false, "warning": "Blueprint target is out of bounds", "construction_id": "", "cells": []}
-        if not bool(cell.walkable):
-            return {"valid": false, "warning": "Blueprint area must be walkable", "construction_id": "", "cells": []}
-        if str(cell.building_id) != "":
-            return {"valid": false, "warning": "Blueprint area already has a building", "construction_id": "", "cells": []}
-        if str(cell.resource_id) != "":
-            return {"valid": false, "warning": "Blueprint area contains a resource", "construction_id": "", "cells": []}
-        if _has_loose_item_at(footprint_cell):
-            return {"valid": false, "warning": "Blueprint area contains a loose item", "construction_id": "", "cells": []}
-        if _cell_in_any_stockpile(footprint_cell):
-            return {"valid": false, "warning": "Blueprint area contains a stockpile zone", "construction_id": "", "cells": []}
+        return {"valid": false, "warning": "Kitchen needs exactly a clear 3x3 zone", "construction_id": "", "cells": [], "world_cells": []}
+    for footprint_world_cell in footprint_world_cells:
+        var payload: Dictionary = _payload_for_world_cell(footprint_world_cell)
+        if payload.is_empty():
+            return {"valid": false, "warning": "Blueprint target is out of bounds", "construction_id": "", "cells": [], "world_cells": []}
+        if not bool(payload.get("walkable", false)):
+            return {"valid": false, "warning": "Blueprint area must be walkable", "construction_id": "", "cells": [], "world_cells": []}
+        if str(payload.get("building_id", "")) != "":
+            return {"valid": false, "warning": "Blueprint area already has a building", "construction_id": "", "cells": [], "world_cells": []}
+        if str(payload.get("resource_id", "")) != "":
+            return {"valid": false, "warning": "Blueprint area contains a resource", "construction_id": "", "cells": [], "world_cells": []}
+        if _has_loose_item_at_world_cell(footprint_world_cell):
+            return {"valid": false, "warning": "Blueprint area contains a loose item", "construction_id": "", "cells": [], "world_cells": []}
+        if _world_cell_in_any_stockpile(footprint_world_cell):
+            return {"valid": false, "warning": "Blueprint area contains a stockpile zone", "construction_id": "", "cells": [], "world_cells": []}
     if _has_conflicting_construction_in_cells(footprint_cells):
-        return {"valid": false, "warning": "Blueprint area already has a blueprint", "construction_id": "", "cells": []}
-    return {"valid": true, "warning": "", "construction_id": "", "cells": footprint_cells}
+        return {"valid": false, "warning": "Blueprint area already has a blueprint", "construction_id": "", "cells": [], "world_cells": []}
+    return {"valid": true, "warning": "", "construction_id": "", "cells": footprint_cells, "world_cells": footprint_world_cells}
 
 func create_construction(building_type: String, target_cell: Vector2i, priority: int = 1, cells: Array = []) -> Dictionary:
-    var validation: Dictionary = validate_blueprint_target(building_type, target_cell, cells)
+    return create_construction_at_world_cell(building_type, _world_cell_for_projected_cell(target_cell), priority, _with_world_cells(cells))
+
+func create_construction_at_world_cell(building_type: String, target_world_cell: Vector3i, priority: int = 1, world_cells: Array = []) -> Dictionary:
+    var target_cell: Vector2i = _projected_cell_for_world_cell(target_world_cell)
+    if target_cell == Vector2i(-1, -1):
+        return {"ok": false, "warning": "Invalid construction target", "construction_id": ""}
+    var validation: Dictionary = validate_blueprint_world_target(building_type, target_world_cell, world_cells)
     if not bool(validation.get("valid", false)):
         return {"ok": false, "warning": str(validation.get("warning", "Invalid construction target")), "construction_id": ""}
     var existing_id: String = str(validation.get("construction_id", ""))
@@ -231,6 +631,8 @@ func create_construction(building_type: String, target_cell: Vector2i, priority:
         "",
         validation["cells"]
     )
+    constructions[id].target_world_cell = target_world_cell
+    constructions[id].world_cells = _world_cells_from_cells(validation["world_cells"])
     _try_reserve_construction_resources(id)
     return {"ok": true, "warning": "", "construction_id": id}
 
@@ -283,6 +685,7 @@ func _try_reserve_construction_resources(construction_id: String) -> bool:
     construction.build_job_id = job_id
     construction.status = "reserved"
     var job = JobScript.new(job_id, "BUILD_CONSTRUCTION", construction.target_cell, construction.priority)
+    _configure_job_world_cell(job)
     var definition: Dictionary = get_building_definition(construction.type)
     job.work_remaining_ticks = int(definition.get("work_ticks", job.work_remaining_ticks))
     job.required_items = {
@@ -323,15 +726,21 @@ func _has_conflicting_construction_in_cells(cells: Array) -> bool:
     return false
 
 func _cell_in_any_stockpile(target_cell: Vector2i) -> bool:
+    return _world_cell_in_any_stockpile(_world_cell_for_projected_cell(target_cell))
+
+func _world_cell_in_any_stockpile(target_world_cell: Vector3i) -> bool:
     for stockpile_id in _sorted_ids(stockpiles):
-        if stockpiles[stockpile_id].contains_cell(target_cell):
+        if stockpiles[stockpile_id].contains_world_cell(target_world_cell):
             return true
     return false
 
 func _has_loose_item_at(target_cell: Vector2i) -> bool:
+    return _has_loose_item_at_world_cell(_world_cell_for_projected_cell(target_cell))
+
+func _has_loose_item_at_world_cell(target_world_cell: Vector3i) -> bool:
     for item_id in _sorted_ids(items):
         var item = items[item_id]
-        if item.position == target_cell and item.holder_unit_id == "":
+        if item.world_cell == target_world_cell and item.holder_unit_id == "":
             return true
     return false
 
@@ -344,9 +753,9 @@ func assign_item_to_stockpile(item_id: String, stockpile_id: String) -> bool:
         return false
     if not stockpile.can_store_items():
         return false
-    if not stockpile.contains_cell(item.position):
+    if not stockpile.contains_world_cell(item.world_cell):
         return false
-    if _cell_has_visible_item(item.position, item_id):
+    if _world_cell_has_visible_item(item.world_cell, item_id):
         return false
     item.stockpile_id = stockpile_id
     item.holder_unit_id = ""
@@ -369,42 +778,57 @@ func release_item_reservation(item_id: String, job_id: String) -> void:
         item.reserved_by_job_id = ""
 
 func make_command(command_tick: int, player_id: String, command_type: String, target_cell: Vector2i, payload: Dictionary = {}, command_id: String = "") -> Dictionary:
+    return make_world_command(command_tick, player_id, command_type, _world_cell_for_projected_cell(target_cell), payload, command_id)
+
+func make_world_command(command_tick: int, player_id: String, command_type: String, target_world_cell: Vector3i, payload: Dictionary = {}, command_id: String = "") -> Dictionary:
     var id: String = command_id
     if id == "":
         id = allocate_id("command")
+    var target_cell: Vector2i = _projected_cell_for_world_cell(target_world_cell)
     return {
         "tick": command_tick,
         "player_id": player_id,
         "command_type": command_type,
+        "target_world_cell": [target_world_cell.x, target_world_cell.y, target_world_cell.z],
         "target_cell": [target_cell.x, target_cell.y],
         "payload": _sorted_dictionary(payload),
         "command_id": id,
     }
 
 func queue_command(command_tick: int, player_id: String, command_type: String, target_cell: Vector2i, payload: Dictionary = {}) -> Dictionary:
-    var command: Dictionary = make_command(command_tick, player_id, command_type, target_cell, payload)
+    _sync_projected_direct_mutations_to_authoritative()
+    return queue_world_command(command_tick, player_id, command_type, _world_cell_for_projected_cell(target_cell), payload)
+
+func queue_world_command(command_tick: int, player_id: String, command_type: String, target_world_cell: Vector3i, payload: Dictionary = {}) -> Dictionary:
+    var command: Dictionary = make_world_command(command_tick, player_id, command_type, target_world_cell, payload)
     queue_existing_command(command)
     return command
 
 func queue_designation_command(command_tick: int, player_id: String, tool_mode: String, target_cell: Vector2i, payload: Dictionary = {}) -> Dictionary:
-    var result: Dictionary = validate_designation_target(tool_mode, target_cell)
+    return queue_designation_world_command(command_tick, player_id, tool_mode, _world_cell_for_projected_cell(target_cell), payload)
+
+func queue_designation_world_command(command_tick: int, player_id: String, tool_mode: String, target_world_cell: Vector3i, payload: Dictionary = {}) -> Dictionary:
+    var result: Dictionary = validate_designation_world_target(tool_mode, target_world_cell)
     if not bool(result["valid"]):
         return result
-    result["command"] = queue_command(command_tick, player_id, str(result["command_type"]), target_cell, payload)
+    result["command"] = queue_world_command(command_tick, player_id, str(result["command_type"]), target_world_cell, payload)
     return result
 
 func queue_stockpile_designation_command(command_tick: int, player_id: String, target_cell: Vector2i, accepted_item_types: Array = ["wood", "stone", "dirt", "food", "meal"], cells: Array = [], storage_mode: String = "both") -> Dictionary:
-    var designation_cells: Array = cells
+    return queue_stockpile_world_designation_command(command_tick, player_id, _world_cell_for_projected_cell(target_cell), accepted_item_types, _with_world_cells(cells), storage_mode)
+
+func queue_stockpile_world_designation_command(command_tick: int, player_id: String, target_world_cell: Vector3i, accepted_item_types: Array = ["wood", "stone", "dirt", "food", "meal"], world_cells: Array = [], storage_mode: String = "both") -> Dictionary:
+    var designation_cells: Array = world_cells
     if designation_cells.is_empty():
-        designation_cells = [target_cell]
-    var result: Dictionary = validate_stockpile_designation_cells(designation_cells)
+        designation_cells = [target_world_cell]
+    var result: Dictionary = validate_stockpile_world_designation_cells(designation_cells)
     if not bool(result["valid"]):
         return result
     var canonical_mode: String = StockpileScript.canonical_storage_mode(storage_mode)
     if canonical_mode == "":
-        return {"valid": false, "warning": "Unknown stockpile storage mode", "stockpile_id": "", "cells": []}
-    var payload: Dictionary = {"accepted_item_types": accepted_item_types, "cells": _serialize_cells(result["cells"]), "storage_mode": canonical_mode}
-    result["command"] = queue_command(command_tick, player_id, "DESIGNATE_STOCKPILE", target_cell, payload)
+        return {"valid": false, "warning": "Unknown stockpile storage mode", "stockpile_id": "", "cells": [], "world_cells": []}
+    var payload: Dictionary = {"accepted_item_types": accepted_item_types, "cells": _serialize_cells(result["cells"]), "world_cells": _serialize_world_cells(result["world_cells"]), "storage_mode": canonical_mode}
+    result["command"] = queue_world_command(command_tick, player_id, "DESIGNATE_STOCKPILE", target_world_cell, payload)
     return result
 
 func queue_stockpile_mode_command(command_tick: int, player_id: String, stockpile_id: String, storage_mode: String) -> Dictionary:
@@ -467,18 +891,27 @@ func resize_stockpile(stockpile_id: String, side: String, delta: int) -> bool:
         return false
     var stockpile = stockpiles[stockpile_id]
     stockpile.cells = validation["cells"]
+    stockpile.set_world_cells(_world_cells_from_cells(validation["cells"]))
     return true
 
 func validate_stockpile_designation_target(target_cell: Vector2i) -> Dictionary:
+    _sync_projected_direct_mutations_to_authoritative()
     return validate_stockpile_designation_cells([target_cell])
 
 func validate_stockpile_designation_cells(cells: Array, ignored_stockpile_id: String = "") -> Dictionary:
-    var valid_cells: Array[Vector2i] = _valid_stockpile_cells(cells)
+    _sync_projected_direct_mutations_to_authoritative()
+    return validate_stockpile_world_designation_cells(_with_world_cells(cells), ignored_stockpile_id)
+
+func validate_stockpile_world_designation_target(target_world_cell: Vector3i) -> Dictionary:
+    return validate_stockpile_world_designation_cells([target_world_cell])
+
+func validate_stockpile_world_designation_cells(world_cells: Array, ignored_stockpile_id: String = "") -> Dictionary:
+    var valid_cells: Array[Vector2i] = _valid_stockpile_cells(world_cells)
     if valid_cells.is_empty():
-        return {"valid": false, "warning": "Stockpile zone needs at least one walkable cell", "stockpile_id": "", "cells": []}
+        return {"valid": false, "warning": "Stockpile zone needs at least one walkable cell", "stockpile_id": "", "cells": [], "world_cells": []}
     if _cells_overlap_stockpiles(valid_cells, ignored_stockpile_id):
-        return {"valid": false, "warning": "Stockpile zones cannot overlap", "stockpile_id": "", "cells": []}
-    return {"valid": true, "warning": "", "stockpile_id": "", "cells": valid_cells}
+        return {"valid": false, "warning": "Stockpile zones cannot overlap", "stockpile_id": "", "cells": [], "world_cells": []}
+    return {"valid": true, "warning": "", "stockpile_id": "", "cells": valid_cells, "world_cells": _world_cells_from_cells(valid_cells)}
 
 func _valid_stockpile_cells(cells: Array) -> Array[Vector2i]:
     var output: Array[Vector2i] = []
@@ -486,9 +919,15 @@ func _valid_stockpile_cells(cells: Array) -> Array[Vector2i]:
         var target_cell: Vector2i
         if raw_cell is Vector2i:
             target_cell = raw_cell
+        elif raw_cell is Vector3i:
+            target_cell = _projected_cell_for_world_cell(raw_cell)
+        elif raw_cell is Array and raw_cell.size() >= 3:
+            target_cell = _projected_cell_for_world_cell(Vector3i(int(raw_cell[0]), int(raw_cell[1]), int(raw_cell[2])))
         elif raw_cell is Array and raw_cell.size() >= 2:
             target_cell = Vector2i(int(raw_cell[0]), int(raw_cell[1]))
         else:
+            continue
+        if target_cell == Vector2i(-1, -1):
             continue
         if not _is_valid_stockpile_cell(target_cell):
             continue
@@ -496,12 +935,11 @@ func _valid_stockpile_cells(cells: Array) -> Array[Vector2i]:
     return ZoneScript.canonical_cells(output)
 
 func _is_valid_stockpile_cell(target_cell: Vector2i) -> bool:
-    if world == null or not world.in_bounds(target_cell):
-        return false
-    var cell = world.get_cell(target_cell)
-    if cell == null or not cell.walkable:
-        return false
-    return true
+    return _is_valid_stockpile_world_cell(_world_cell_for_projected_cell(target_cell))
+
+func _is_valid_stockpile_world_cell(target_world_cell: Vector3i) -> bool:
+    var payload: Dictionary = _payload_for_world_cell(target_world_cell)
+    return not payload.is_empty() and bool(payload.get("walkable", false))
 
 func _cells_overlap_stockpiles(cells: Array, ignored_stockpile_id: String = "") -> bool:
     var requested: Dictionary = {}
@@ -517,20 +955,28 @@ func _cells_overlap_stockpiles(cells: Array, ignored_stockpile_id: String = "") 
     return false
 
 func validate_designation_target(tool_mode: String, target_cell: Vector2i) -> Dictionary:
+    _sync_projected_direct_mutations_to_authoritative()
+    return validate_designation_world_target(tool_mode, _world_cell_for_projected_cell(target_cell))
+
+func validate_designation_world_target(tool_mode: String, target_world_cell: Vector3i) -> Dictionary:
+    var target_cell: Vector2i = _projected_cell_for_world_cell(target_world_cell)
     var spec: Dictionary = _designation_spec_for_tool_mode(tool_mode)
     if spec.is_empty():
         return {"valid": false, "warning": "Unknown designation tool: " + tool_mode, "command_type": ""}
-    if world == null or not world.in_bounds(target_cell):
+    if target_cell == Vector2i(-1, -1):
         return {"valid": false, "warning": "Designation target is out of bounds", "command_type": str(spec["command_type"])}
     if tool_mode == TOOL_MODE_MINE:
-        return _validate_mine_designation_target(target_cell, spec)
-    var cell = world.get_cell(target_cell)
-    if cell == null or cell.resource_id == "":
+        return _validate_mine_designation_world_target(target_world_cell, spec)
+    var payload: Dictionary = _payload_for_world_cell(target_world_cell)
+    if payload.is_empty():
         return {"valid": false, "warning": "Select a cell with " + str(spec["resource_label"]), "command_type": str(spec["command_type"])}
-    var resource: Dictionary = resources.get(cell.resource_id, {})
+    var resource_id: String = _resource_id_at_world_cell(target_world_cell, str(spec["resource_type"]))
+    if resource_id == "":
+        return {"valid": false, "warning": "Select a cell with " + str(spec["resource_label"]), "command_type": str(spec["command_type"])}
+    var resource: Dictionary = resources.get(resource_id, {})
     if resource.get("type", "") != spec["resource_type"]:
         return {"valid": false, "warning": "Select a " + str(spec["resource_label"]) + " target", "command_type": str(spec["command_type"])}
-    return {"valid": true, "warning": "", "command_type": str(spec["command_type"])}
+    return {"valid": true, "warning": "", "command_type": str(spec["command_type"]), "target_world_cell": [target_world_cell.x, target_world_cell.y, target_world_cell.z]}
 
 func _designation_spec_for_tool_mode(tool_mode: String) -> Dictionary:
     match tool_mode:
@@ -545,23 +991,29 @@ func _designation_spec_for_tool_mode(tool_mode: String) -> Dictionary:
     return {}
 
 func _validate_mine_designation_target(target_cell: Vector2i, spec: Dictionary) -> Dictionary:
-    var cell = world.get_cell(target_cell)
-    if cell == null:
+    return _validate_mine_designation_world_target(_world_cell_for_projected_cell(target_cell), spec)
+
+func _validate_mine_designation_world_target(target_world_cell: Vector3i, spec: Dictionary) -> Dictionary:
+    var target_cell: Vector2i = _projected_cell_for_world_cell(target_world_cell)
+    var payload: Dictionary = _payload_for_world_cell(target_world_cell)
+    if payload.is_empty() or target_cell == Vector2i(-1, -1):
         return {"valid": false, "warning": "Designation target is out of bounds", "command_type": str(spec["command_type"])}
-    if str(cell.resource_id) != "":
-        var resource: Dictionary = resources.get(cell.resource_id, {})
+    if str(payload.get("resource_id", "")) != "":
+        var resource: Dictionary = resources.get(str(payload.get("resource_id", "")), {})
         if str(resource.get("type", "")) == "stone":
-            var stone_work_cell: Vector2i = _find_reachable_mine_work_cell(target_cell)
-            if stone_work_cell == Vector2i(-1, -1):
+            var stone_work_cell: Vector3i = _find_reachable_mine_work_world_cell(target_world_cell)
+            if stone_work_cell == INVALID_WORLD_CELL:
                 return {"valid": false, "warning": "No worker can reach a cell to mine that target", "command_type": str(spec["command_type"])}
-            return {"valid": true, "warning": "", "command_type": str(spec["command_type"]), "work_cell": [stone_work_cell.x, stone_work_cell.y]}
+            var projected_work_cell: Vector2i = _projected_cell_for_world_cell(stone_work_cell)
+            return {"valid": true, "warning": "", "command_type": str(spec["command_type"]), "work_cell": [projected_work_cell.x, projected_work_cell.y], "work_world_cell": [stone_work_cell.x, stone_work_cell.y, stone_work_cell.z]}
         return {"valid": false, "warning": "Select grass, dirt, or a surface rock to mine", "command_type": str(spec["command_type"])}
-    if not world.is_mineable_cell(target_cell):
+    if not _is_mineable_world_cell(target_world_cell):
         return {"valid": false, "warning": "Select grass, dirt, or a surface rock to mine", "command_type": str(spec["command_type"])}
-    var work_cell: Vector2i = _find_reachable_mine_work_cell(target_cell)
-    if work_cell == Vector2i(-1, -1):
+    var work_cell: Vector3i = _find_reachable_mine_work_world_cell(target_world_cell)
+    if work_cell == INVALID_WORLD_CELL:
         return {"valid": false, "warning": "No worker can reach a cell to mine that target", "command_type": str(spec["command_type"])}
-    return {"valid": true, "warning": "", "command_type": str(spec["command_type"]), "work_cell": [work_cell.x, work_cell.y]}
+    var projected_work_cell: Vector2i = _projected_cell_for_world_cell(work_cell)
+    return {"valid": true, "warning": "", "command_type": str(spec["command_type"]), "work_cell": [projected_work_cell.x, projected_work_cell.y], "work_world_cell": [work_cell.x, work_cell.y, work_cell.z]}
 
 func queue_existing_command(command: Dictionary) -> void:
     command_queue.append(_normalize_command(command))
@@ -569,10 +1021,20 @@ func queue_existing_command(command: Dictionary) -> void:
 
 func _normalize_command(command: Dictionary) -> Dictionary:
     var target: Array = command.get("target_cell", [0, 0])
+    var target_world: Array = command.get("target_world_cell", [])
+    var target_world_cell: Vector3i
+    if target_world.size() >= 3:
+        target_world_cell = _array_to_vector3i(target_world)
+        var projected_cell: Vector2i = _projected_cell_for_world_cell(target_world_cell)
+        if projected_cell != Vector2i(-1, -1):
+            target = [projected_cell.x, projected_cell.y]
+    else:
+        target_world_cell = _world_cell_for_projected_cell(Vector2i(int(target[0]), int(target[1])))
     return {
         "tick": int(command.get("tick", 0)),
         "player_id": str(command.get("player_id", "player_001")),
         "command_type": str(command.get("command_type", "")),
+        "target_world_cell": [target_world_cell.x, target_world_cell.y, target_world_cell.z],
         "target_cell": [int(target[0]), int(target[1])],
         "payload": _sorted_dictionary(command.get("payload", {})),
         "command_id": str(command.get("command_id", "cmd_000000")),
@@ -585,13 +1047,14 @@ func _compare_commands(a: Dictionary, b: Dictionary) -> bool:
     return _command_sort_key(a) < _command_sort_key(b)
 
 func _command_sort_key(command: Dictionary) -> String:
-    return "%012d|%s|%s|%s|%012d|%012d|%s" % [
+    return "%012d|%s|%s|%s|%012d|%012d|%012d|%s" % [
         int(command["tick"]),
         str(command["command_id"]),
         str(command["player_id"]),
         str(command["command_type"]),
-        int(command["target_cell"][0]),
-        int(command["target_cell"][1]),
+        int(command["target_world_cell"][0]),
+        int(command["target_world_cell"][1]),
+        int(command["target_world_cell"][2]),
         JSON.stringify(command["payload"]),
     ]
 
@@ -625,10 +1088,12 @@ func create_haul_jobs_for_loose_items() -> void:
             continue
         reserved_destination_cells[_cell_key(destination_cell)] = true
         var job = JobScript.new(job_id, "HAUL_ITEM", item.position, 1)
+        job.target_world_cell = item.world_cell
         job.required_items = {
             "item_id": item_id,
             "stockpile_id": stockpile_id,
             "destination_cell": [destination_cell.x, destination_cell.y],
+            "destination_world_cell": _serialize_single_world_cell(_world_cell_for_projected_cell(destination_cell)),
             "phase": "pickup",
         }
         job_board.add_job(job)
@@ -653,11 +1118,13 @@ func create_haul_jobs_for_loose_items() -> void:
             continue
         reserved_destination_cells[_cell_key(destination_cell)] = true
         var job = JobScript.new(job_id, "HAUL_ITEM", item.position, 1)
+        job.target_world_cell = item.world_cell
         job.required_items = {
             "item_id": item_id,
             "stockpile_id": destination_stockpile_id,
             "source_stockpile_id": item.stockpile_id,
             "destination_cell": [destination_cell.x, destination_cell.y],
+            "destination_world_cell": _serialize_single_world_cell(_world_cell_for_projected_cell(destination_cell)),
             "phase": "pickup",
         }
         job_board.add_job(job)
@@ -678,6 +1145,7 @@ func create_workshop_order(building_id: String, recipe_id: String, priority: int
         "building_type": construction.type,
         "recipe_id": recipe_id,
         "target_cell": [construction.target_cell.x, construction.target_cell.y],
+        "target_world_cell": [construction.target_world_cell.x, construction.target_world_cell.y, construction.target_world_cell.z],
         "priority": priority,
         "status": "queued",
         "reserved_item_ids": [],
@@ -709,8 +1177,11 @@ func _try_reserve_workshop_order(order_id: String) -> bool:
             for released_id in reserved_item_ids:
                 release_item_reservation(released_id, job_id)
             return false
-    var target: Array = order.get("target_cell", [0, 0])
-    var job = JobScript.new(job_id, str(recipe.get("job_type", "COOK_MEAL")), Vector2i(int(target[0]), int(target[1])), int(order.get("priority", 1)))
+    var target_world: Array = order.get("target_world_cell", [])
+    var target_world_cell: Vector3i = _array_to_vector3i(target_world) if target_world.size() >= 3 else _world_cell_for_projected_cell(Vector2i(int(order.get("target_cell", [0, 0])[0]), int(order.get("target_cell", [0, 0])[1])))
+    var target: Vector2i = _projected_cell_for_world_cell(target_world_cell)
+    var job = JobScript.new(job_id, str(recipe.get("job_type", "COOK_MEAL")), target, int(order.get("priority", 1)))
+    job.target_world_cell = target_world_cell
     job.work_remaining_ticks = int(recipe.get("work_ticks", job.work_remaining_ticks))
     job.produced_items = recipe.get("produced_items", {}).duplicate(true)
     job.required_items = {
@@ -793,11 +1264,14 @@ func _active_haul_destination_cells() -> Dictionary:
     return output
 
 func _cell_has_visible_item(cell: Vector2i, except_item_id: String = "") -> bool:
+    return _world_cell_has_visible_item(_world_cell_for_projected_cell(cell), except_item_id)
+
+func _world_cell_has_visible_item(world_cell: Vector3i, except_item_id: String = "") -> bool:
     for item_id in _sorted_ids(items):
         if item_id == except_item_id:
             continue
         var item = items[item_id]
-        if item.holder_unit_id == "" and item.position == cell:
+        if item.holder_unit_id == "" and item.world_cell == world_cell:
             return true
     return false
 
@@ -967,18 +1441,21 @@ func _apply_due_commands() -> void:
     command_queue = remaining
 
 func _apply_command(command: Dictionary) -> void:
-    var target: Vector2i = Vector2i(int(command["target_cell"][0]), int(command["target_cell"][1]))
+    var target_world: Vector3i = _array_to_vector3i(command.get("target_world_cell", []))
+    var target: Vector2i = _projected_cell_for_world_cell(target_world)
+    if target == Vector2i(-1, -1):
+        return
     match command["command_type"]:
         "DESIGNATE_CHOP":
-            _create_job_for_resource(target, "tree", "CHOP_TREE", int(command["payload"].get("priority", 1)))
+            _create_job_for_resource_world(target_world, "tree", "CHOP_TREE", int(command["payload"].get("priority", 1)))
         "DESIGNATE_GATHER_STONE":
-            _create_job_for_resource(target, "stone", "GATHER_STONE", int(command["payload"].get("priority", 1)))
+            _create_job_for_resource_world(target_world, "stone", "GATHER_STONE", int(command["payload"].get("priority", 1)))
         "DESIGNATE_GATHER_FOOD":
-            _create_job_for_resource(target, "berry", "GATHER_FOOD", int(command["payload"].get("priority", 1)))
+            _create_job_for_resource_world(target_world, "berry", "GATHER_FOOD", int(command["payload"].get("priority", 1)))
         "DESIGNATE_MINE":
-            _create_mine_job(target, int(command["payload"].get("priority", 1)))
+            _create_mine_world_job(target_world, int(command["payload"].get("priority", 1)))
         "DESIGNATE_STOCKPILE":
-            designate_stockpile(target, command["payload"])
+            designate_stockpile_at_world_cell(target_world, command["payload"])
         "RESIZE_STOCKPILE":
             resize_stockpile(
                 str(command["payload"].get("stockpile_id", "")),
@@ -991,11 +1468,11 @@ func _apply_command(command: Dictionary) -> void:
                 str(command["payload"].get("storage_mode", ""))
             )
         "PLACE_BLUEPRINT":
-            create_construction(
+            create_construction_at_world_cell(
                 str(command["payload"].get("building_type", "")),
-                target,
+                target_world,
                 int(command["payload"].get("priority", 1)),
-                command["payload"].get("cells", [])
+                command["payload"].get("world_cells", command["payload"].get("cells", []))
             )
         "QUEUE_WORKSHOP_RECIPE":
             create_workshop_order(
@@ -1018,25 +1495,39 @@ func set_unit_job_type_priority(unit_id: String, job_type: String, priority: int
     return true
 
 func _create_job_for_resource(target: Vector2i, resource_type: String, job_type: String, priority: int) -> void:
-    var cell = world.get_cell(target)
-    if cell == null or cell.resource_id == "":
+    _create_job_for_resource_world(_world_cell_for_projected_cell(target), resource_type, job_type, priority)
+
+func _create_job_for_resource_world(target_world_cell: Vector3i, resource_type: String, job_type: String, priority: int) -> void:
+    var target: Vector2i = _projected_cell_for_world_cell(target_world_cell)
+    var payload: Dictionary = _payload_for_world_cell(target_world_cell)
+    if target == Vector2i(-1, -1) or payload.is_empty():
         return
-    var resource = resources.get(cell.resource_id, {})
+    var resource_id: String = _resource_id_at_world_cell(target_world_cell, resource_type)
+    if resource_id == "":
+        return
+    var resource = resources.get(resource_id, {})
     if resource.get("type", "") != resource_type:
         return
     if job_board.has_open_job_at(job_type, target):
         return
     var job = JobScript.new(allocate_id("job"), job_type, target, priority)
+    job.target_world_cell = target_world_cell
     job_board.add_job(job)
 
 func _create_mine_job(target: Vector2i, priority: int) -> void:
-    var validation: Dictionary = validate_designation_target(TOOL_MODE_MINE, target)
+    _create_mine_world_job(_world_cell_for_projected_cell(target), priority)
+
+func _create_mine_world_job(target_world_cell: Vector3i, priority: int) -> void:
+    var target: Vector2i = _projected_cell_for_world_cell(target_world_cell)
+    var validation: Dictionary = validate_designation_world_target(TOOL_MODE_MINE, target_world_cell)
     if not bool(validation.get("valid", false)):
         return
     if job_board.has_open_job_at("MINE_CELL", target):
         return
     var job = JobScript.new(allocate_id("job"), "MINE_CELL", target, priority)
+    job.target_world_cell = target_world_cell
     job.required_items["work_cell"] = validation.get("work_cell", [target.x, target.y])
+    job.required_items["work_world_cell"] = validation.get("work_world_cell", [target_world_cell.x, target_world_cell.y, target_world_cell.z])
     job_board.add_job(job)
 
 func _advance_needs() -> void:
@@ -1123,7 +1614,7 @@ func _advance_units() -> void:
                     continue
             else:
                 unit.unreachable_job_ticks = 0
-            unit.position = next_position
+            _set_unit_projected_position(unit, next_position)
             unit.state = "walking"
         else:
             unit.unreachable_job_ticks = 0
@@ -1153,7 +1644,7 @@ func _advance_haul_job(unit, job) -> void:
                 _release_job_if_unreachable(unit, job)
                 return
             unit.unreachable_job_ticks = 0
-            unit.position = next_pickup_position
+            _set_unit_projected_position(unit, next_pickup_position)
             unit.state = "walking"
             return
         unit.unreachable_job_ticks = 0
@@ -1173,12 +1664,12 @@ func _advance_haul_job(unit, job) -> void:
             _release_job_if_unreachable(unit, job)
             return
         unit.unreachable_job_ticks = 0
-        unit.position = next_delivery_position
-        item.position = unit.position
+        _set_unit_projected_position(unit, next_delivery_position)
+        _set_item_projected_position(item, unit.position)
         unit.state = "carrying"
         return
     unit.unreachable_job_ticks = 0
-    item.position = destination
+    _set_item_projected_position(item, destination)
     if not assign_item_to_stockpile(item_id, stockpile_id):
         _fail_haul_job(unit, job, item_id)
         return
@@ -1205,7 +1696,7 @@ func _release_unreachable_job(unit, job) -> void:
             var item = items[item_id]
             if item.holder_unit_id == unit.id:
                 item.holder_unit_id = ""
-                item.position = unit.position
+                _set_item_projected_position(item, unit.position)
             unit.inventory.erase(item_id)
         job.required_items["phase"] = "pickup"
     job_board.release_job(job.id, unit.id)
@@ -1215,16 +1706,31 @@ func _release_unreachable_job(unit, job) -> void:
 
 func _job_destination_cell(job) -> Vector2i:
     if job.type == "MINE_CELL":
+        var world_raw: Array = job.required_items.get("work_world_cell", [])
+        if world_raw.size() >= 3:
+            return _projected_cell_for_world_cell(_array_to_vector3i(world_raw))
         var raw: Array = job.required_items.get("work_cell", [])
         if raw.size() >= 2:
             return Vector2i(int(raw[0]), int(raw[1]))
     return job.target_cell
 
 func _haul_destination_cell(job) -> Vector2i:
+    var world_raw: Array = job.required_items.get("destination_world_cell", [])
+    if world_raw.size() >= 3:
+        return _projected_cell_for_world_cell(_array_to_vector3i(world_raw))
     var raw: Array = job.required_items.get("destination_cell", [])
     if raw.size() < 2:
         return Vector2i(-1, -1)
     return Vector2i(int(raw[0]), int(raw[1]))
+
+func _haul_destination_world_cell(job) -> Vector3i:
+    var world_raw: Array = job.required_items.get("destination_world_cell", [])
+    if world_raw.size() >= 3:
+        return _array_to_vector3i(world_raw)
+    var projected: Vector2i = _haul_destination_cell(job)
+    if projected == Vector2i(-1, -1):
+        return INVALID_WORLD_CELL
+    return _world_cell_for_projected_cell(projected)
 
 func _fail_haul_job(unit, job, item_id: String) -> void:
     release_item_reservation(item_id, job.id)
@@ -1232,7 +1738,7 @@ func _fail_haul_job(unit, job, item_id: String) -> void:
         var item = items[item_id]
         if item.holder_unit_id == unit.id:
             item.holder_unit_id = ""
-            item.position = unit.position
+            _set_item_projected_position(item, unit.position)
     unit.inventory.erase(item_id)
     job.status = "failed"
     job.claimed_by_unit_id = unit.id
@@ -1249,54 +1755,81 @@ func _step_towards(from_cell: Vector2i, to_cell: Vector2i) -> Vector2i:
     return path[1]
 
 func _path_between_cells(from_cell: Vector2i, to_cell: Vector2i) -> Array[Vector2i]:
-    if world == null or not world.in_bounds(from_cell) or not world.in_bounds(to_cell):
+    var world_path: Array[Vector3i] = _path_between_world_cells(_world_cell_for_projected_cell(from_cell), _world_cell_for_projected_cell(to_cell))
+    var path: Array[Vector2i] = []
+    for world_cell in world_path:
+        var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+        if projected_cell != Vector2i(-1, -1):
+            path.append(projected_cell)
+    return path
+
+func _path_between_world_cells(from_world_cell: Vector3i, to_world_cell: Vector3i) -> Array[Vector3i]:
+    if from_world_cell == to_world_cell:
+        return [from_world_cell]
+    if _projected_cell_for_world_cell(from_world_cell) == Vector2i(-1, -1) or _projected_cell_for_world_cell(to_world_cell) == Vector2i(-1, -1):
         return []
-    if not _can_stand_on_cell(from_cell) or not _can_stand_on_cell(to_cell):
+    if not _can_stand_on_world_cell(from_world_cell) or not _can_stand_on_world_cell(to_world_cell):
         return []
-    var frontier: Array[Vector2i] = [from_cell]
-    var came_from: Dictionary = {_cell_key(from_cell): from_cell}
+    var frontier: Array[Vector3i] = [from_world_cell]
+    var came_from: Dictionary = {_world_cell_key(from_world_cell): from_world_cell}
     var cursor: int = 0
     while cursor < frontier.size():
-        var current: Vector2i = frontier[cursor]
+        var current: Vector3i = frontier[cursor]
         cursor += 1
-        if current == to_cell:
+        if current == to_world_cell:
             break
-        for neighbor in _movement_neighbors(current):
-            var key: String = _cell_key(neighbor)
+        for neighbor in _movement_world_neighbors(current):
+            var key: String = _world_cell_key(neighbor)
             if came_from.has(key):
                 continue
             came_from[key] = current
             frontier.append(neighbor)
-    if not came_from.has(_cell_key(to_cell)):
+    if not came_from.has(_world_cell_key(to_world_cell)):
         return []
-    var path: Array[Vector2i] = [to_cell]
-    var step: Vector2i = to_cell
-    while step != from_cell:
-        step = came_from[_cell_key(step)]
+    var path: Array[Vector3i] = [to_world_cell]
+    var step: Vector3i = to_world_cell
+    while step != from_world_cell:
+        step = came_from[_world_cell_key(step)]
         path.push_front(step)
     return path
 
 func _find_reachable_mine_work_cell(target_cell: Vector2i) -> Vector2i:
-    var candidates: Array[Vector2i] = _mine_work_cell_candidates(target_cell)
-    if candidates.is_empty():
+    var world_cell: Vector3i = _find_reachable_mine_work_world_cell(_world_cell_for_projected_cell(target_cell))
+    if world_cell == INVALID_WORLD_CELL:
         return Vector2i(-1, -1)
+    return _projected_cell_for_world_cell(world_cell)
+
+func _find_reachable_mine_work_world_cell(target_world_cell: Vector3i) -> Vector3i:
+    var candidates: Array[Vector3i] = _mine_work_world_cell_candidates(target_world_cell)
+    if candidates.is_empty():
+        return INVALID_WORLD_CELL
     for unit_id in _sorted_ids(units):
         var unit = units[unit_id]
         for candidate in candidates:
-            if unit.position == candidate or _path_between_cells(unit.position, candidate).size() >= 2:
+            if unit.world_cell == candidate or _path_between_world_cells(unit.world_cell, candidate).size() >= 2:
                 return candidate
-    return Vector2i(-1, -1)
+    return INVALID_WORLD_CELL
 
 func _mine_work_cell_candidates(target_cell: Vector2i) -> Array[Vector2i]:
-    var target_data = world.get_cell(target_cell)
-    if target_data == null or not world.is_mineable_cell(target_cell):
+    var output: Array[Vector2i] = []
+    for world_cell in _mine_work_world_cell_candidates(_world_cell_for_projected_cell(target_cell)):
+        var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+        if projected_cell != Vector2i(-1, -1):
+            output.append(projected_cell)
+    return _dedupe_cells(output)
+
+func _mine_work_world_cell_candidates(target_world_cell: Vector3i) -> Array[Vector3i]:
+    var target_cell: Vector2i = _projected_cell_for_world_cell(target_world_cell)
+    var target_data = world.get_cell(target_cell) if target_cell != Vector2i(-1, -1) else null
+    if target_data == null or not _is_mineable_world_cell(target_world_cell):
         return []
-    var candidates: Array[Vector2i] = []
+    var candidates: Array[Vector3i] = []
     var above: Vector2i = _cell_above(target_cell)
     if above != Vector2i(-1, -1):
-        var above_data = world.get_cell(above)
-        if above_data != null and str(above_data.terrain) == GridWorldScript.TERRAIN_EXCAVATED and _can_stand_on_cell(above):
-            candidates.append(above)
+        var above_world_cell: Vector3i = _world_cell_for_projected_cell(above)
+        var above_payload: Dictionary = _payload_for_world_cell(above_world_cell)
+        if not above_payload.is_empty() and str(above_payload.get("terrain", "")) == GridWorldScript.TERRAIN_EXCAVATED and _can_stand_on_world_cell(above_world_cell):
+            candidates.append(above_world_cell)
     var target_depth: int = int(target_data.depth)
     var display_cell: Vector2i = _display_cell_for_sim_cell(target_cell)
     for offset in [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]:
@@ -1306,11 +1839,32 @@ func _mine_work_cell_candidates(target_cell: Vector2i) -> Array[Vector2i]:
         var candidate: Vector2i = _cell_at_display_depth(candidate_display, target_depth)
         if candidate == Vector2i(-1, -1) or candidate == target_cell:
             continue
-        if _can_stand_on_cell(candidate):
-            candidates.append(candidate)
-    if int(target_data.depth) >= 0 and _can_stand_on_cell(target_cell):
-        candidates.append(target_cell)
-    return _dedupe_cells(candidates)
+        var candidate_world_cell: Vector3i = _world_cell_for_projected_cell(candidate)
+        if _can_stand_on_world_cell(candidate_world_cell):
+            candidates.append(candidate_world_cell)
+    if int(target_data.depth) >= 0 and _can_stand_on_world_cell(target_world_cell):
+        candidates.append(target_world_cell)
+    return _dedupe_world_cells(candidates)
+
+func _is_mineable_world_cell(world_cell: Vector3i) -> bool:
+    var payload: Dictionary = _payload_for_world_cell(world_cell)
+    if payload.is_empty():
+        return false
+    var material_key: String = str(payload.get("material_key", ""))
+    var terrain: String = str(payload.get("terrain", ""))
+    var required_tier: int = int(payload.get("mining_tier_required", GridWorldScript.MINING_TIER_NONE))
+    if required_tier > GridWorldScript.MINING_TIER_BASIC:
+        return false
+    if terrain in [GridWorldScript.TERRAIN_GRASS, GridWorldScript.TERRAIN_DIRT, GridWorldScript.TERRAIN_ROCK]:
+        return true
+    return material_key in [
+        GridWorldScript.MATERIAL_GRASS,
+        GridWorldScript.MATERIAL_DIRT,
+        GridWorldScript.MATERIAL_CLAY,
+        GridWorldScript.MATERIAL_GRAVEL,
+        GridWorldScript.MATERIAL_LOOSE_STONE,
+        GridWorldScript.MATERIAL_SOFT_ROCK,
+    ]
 
 func _dedupe_cells(cells: Array[Vector2i]) -> Array[Vector2i]:
     var output: Array[Vector2i] = []
@@ -1323,19 +1877,59 @@ func _dedupe_cells(cells: Array[Vector2i]) -> Array[Vector2i]:
         output.append(cell)
     return output
 
+func _dedupe_world_cells(cells: Array[Vector3i]) -> Array[Vector3i]:
+    var output: Array[Vector3i] = []
+    var seen: Dictionary = {}
+    for cell in cells:
+        var key: String = _world_cell_key(cell)
+        if seen.has(key):
+            continue
+        seen[key] = true
+        output.append(cell)
+    return output
+
 func _movement_neighbors(cell: Vector2i) -> Array[Vector2i]:
     var output: Array[Vector2i] = []
-    for z in range(world.height):
-        for x in range(world.width):
-            var candidate := Vector2i(x, z)
-            if candidate == cell:
-                continue
-            if _can_step_between_cells(cell, candidate):
-                output.append(candidate)
+    for world_cell in _movement_world_neighbors(_world_cell_for_projected_cell(cell)):
+        var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+        if projected_cell != Vector2i(-1, -1):
+            output.append(projected_cell)
+    return output
+
+func _movement_world_neighbors(world_cell: Vector3i) -> Array[Vector3i]:
+    var output: Array[Vector3i] = []
+    var projected_cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+    if projected_cell == Vector2i(-1, -1):
+        return output
+    var display_cell: Vector2i = _display_cell_for_sim_cell(projected_cell)
+    for offset in [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]:
+        var candidate_display: Vector2i = display_cell + offset
+        if candidate_display.x < 0 or candidate_display.y < 0:
+            continue
+        var candidate_projected: Vector2i = _cell_at_display_depth(candidate_display, world_cell.y)
+        if candidate_projected == Vector2i(-1, -1):
+            continue
+        var candidate_world_cell: Vector3i = _world_cell_for_projected_cell(candidate_projected)
+        if _can_step_between_world_cells(world_cell, candidate_world_cell):
+            output.append(candidate_world_cell)
+    for vertical_depth in [world_cell.y - 1, world_cell.y + 1]:
+        var vertical_projected: Vector2i = _cell_at_display_depth(display_cell, vertical_depth)
+        if vertical_projected == Vector2i(-1, -1):
+            continue
+        var vertical_world_cell: Vector3i = _world_cell_for_projected_cell(vertical_projected)
+        if _can_step_between_world_cells(world_cell, vertical_world_cell):
+            output.append(vertical_world_cell)
     return output
 
 func _can_step_between_cells(from_cell: Vector2i, to_cell: Vector2i) -> bool:
-    if not _can_stand_on_cell(to_cell):
+    return _can_step_between_world_cells(_world_cell_for_projected_cell(from_cell), _world_cell_for_projected_cell(to_cell))
+
+func _can_step_between_world_cells(from_world_cell: Vector3i, to_world_cell: Vector3i) -> bool:
+    if not _can_stand_on_world_cell(to_world_cell):
+        return false
+    var from_cell: Vector2i = _projected_cell_for_world_cell(from_world_cell)
+    var to_cell: Vector2i = _projected_cell_for_world_cell(to_world_cell)
+    if from_cell == Vector2i(-1, -1) or to_cell == Vector2i(-1, -1):
         return false
     var from_data = world.get_cell(from_cell)
     var to_data = world.get_cell(to_cell)
@@ -1354,24 +1948,33 @@ func _can_step_between_cells(from_cell: Vector2i, to_cell: Vector2i) -> bool:
     return str(to_data.terrain) == GridWorldScript.TERRAIN_EXCAVATED
 
 func _can_stand_on_cell(cell: Vector2i) -> bool:
-    var cell_data = world.get_cell(cell)
-    if cell_data == null:
+    return _can_stand_on_world_cell(_world_cell_for_projected_cell(cell))
+
+func _can_stand_on_world_cell(world_cell: Vector3i) -> bool:
+    var payload: Dictionary = _payload_for_world_cell(world_cell)
+    if payload.is_empty() or not bool(payload.get("walkable", false)):
         return false
-    if not bool(cell_data.walkable):
-        return false
-    return _is_cell_exposed(cell)
+    return _is_world_cell_exposed(world_cell)
 
 func _is_cell_exposed(cell: Vector2i) -> bool:
-    var cell_data = world.get_cell(cell)
-    if cell_data == null:
+    return _is_world_cell_exposed(_world_cell_for_projected_cell(cell))
+
+func _is_world_cell_exposed(world_cell: Vector3i) -> bool:
+    var payload: Dictionary = _payload_for_world_cell(world_cell)
+    if payload.is_empty():
         return false
-    if int(cell_data.depth) >= 0:
+    if bool(payload.get("is_cave", false)) or str(payload.get("exposure", "")) == "cave":
         return true
+    if world_cell.y >= 0:
+        return true
+    var cell: Vector2i = _projected_cell_for_world_cell(world_cell)
+    if cell == Vector2i(-1, -1):
+        return false
     var above: Vector2i = _cell_above(cell)
     if above == Vector2i(-1, -1):
         return false
-    var above_data = world.get_cell(above)
-    return above_data != null and str(above_data.terrain) == GridWorldScript.TERRAIN_EXCAVATED
+    var above_payload: Dictionary = _payload_for_world_cell(_world_cell_for_projected_cell(above))
+    return not above_payload.is_empty() and str(above_payload.get("terrain", "")) == GridWorldScript.TERRAIN_EXCAVATED
 
 func _cell_above(cell: Vector2i) -> Vector2i:
     var cell_data = world.get_cell(cell)
@@ -1415,15 +2018,15 @@ func _complete_job(unit, job) -> void:
         _complete_mine_job(unit, job)
         return
     var cell = world.get_cell(job.target_cell)
-    var resource_id: String = cell.resource_id if cell != null else ""
+    var resource_id: String = _resource_id_at_cell(job.target_cell, _resource_type_for_job(job.type)) if cell != null else ""
     if cell != null and resource_id != "":
         var resource: Dictionary = resources.get(resource_id, {})
         if resource.get("type", "") == _resource_type_for_job(job.type):
             for item_type in _sorted_ids(job.produced_items):
                 var item_id: String = allocate_id("item")
-                items[item_id] = ItemScript.new(item_id, item_type, int(job.produced_items[item_type]), job.target_cell)
+                items[item_id] = _create_item_at_projected_cell(item_id, item_type, int(job.produced_items[item_type]), job.target_cell)
             resources.erase(resource_id)
-            world.clear_resource(job.target_cell, resource_id)
+            _clear_resource_authoritative(job.target_cell, resource_id)
     job.status = "complete"
     job.claimed_by_unit_id = unit.id
     unit.current_job_id = ""
@@ -1451,20 +2054,33 @@ func _complete_mine_job(unit, job) -> void:
             unit.state = "idle"
             return
         var item_id: String = allocate_id("item")
-        items[item_id] = ItemScript.new(item_id, "stone", 1, job.target_cell)
+        items[item_id] = _create_item_at_projected_cell(item_id, "stone", 1, job.target_cell)
         resources.erase(resource_id)
-        world.clear_resource(job.target_cell, resource_id)
+        _clear_resource_authoritative(job.target_cell, resource_id)
+    elif str(cell.material_key) == "GRAVEL":
+        var gravel_item_id: String = allocate_id("item")
+        items[gravel_item_id] = _create_item_at_projected_cell(gravel_item_id, "gravel", 1, job.target_cell)
+    elif str(cell.material_key) == "CLAY":
+        var clay_item_id: String = allocate_id("item")
+        items[clay_item_id] = _create_item_at_projected_cell(clay_item_id, "clay", 1, job.target_cell)
+    elif not cell.hidden_mine_yield.is_empty():
+        var hidden_yield: Dictionary = cell.hidden_mine_yield
+        var hidden_item_id: String = allocate_id("item")
+        items[hidden_item_id] = _create_item_at_projected_cell(hidden_item_id, str(hidden_yield.get("item_type", "stone")), int(hidden_yield.get("quantity", 1)), job.target_cell)
     elif str(cell.terrain) == "rock":
         var rock_item_id: String = allocate_id("item")
-        items[rock_item_id] = ItemScript.new(rock_item_id, "stone", 1, job.target_cell)
+        items[rock_item_id] = _create_item_at_projected_cell(rock_item_id, "stone", 1, job.target_cell)
     elif str(cell.terrain) in ["grass", "dirt"]:
         var dirt_item_id: String = allocate_id("item")
-        items[dirt_item_id] = ItemScript.new(dirt_item_id, "dirt", 1, job.target_cell)
-    world.mine_cell(job.target_cell)
-    if resource_id != "" and original_terrain == "rock":
-        cell.terrain = "excavated"
+        items[dirt_item_id] = _create_item_at_projected_cell(dirt_item_id, "dirt", 1, job.target_cell)
+    _mine_cell_authoritative(job.target_cell)
+    cell = world.get_cell(job.target_cell)
+    if resource_id != "" and original_terrain == "rock" and cell != null:
+        var mined_payload: Dictionary = _authoritative_payload_for_projected_cell(job.target_cell)
+        mined_payload["terrain"] = "excavated"
+        _set_authoritative_payload_for_projected_cell(job.target_cell, mined_payload)
     if _mine_cell_collapses(cell):
-        world.collapse_cell(job.target_cell)
+        _collapse_cell_authoritative(job.target_cell)
     job.status = "complete"
     job.claimed_by_unit_id = unit.id
     unit.current_job_id = ""
@@ -1502,7 +2118,7 @@ func _complete_workshop_job(unit, job) -> void:
     _consume_reserved_items_for_recipe(order.get("reserved_item_ids", []), recipe.get("required_items", {}), job.id)
     for item_type in _sorted_ids(recipe.get("produced_items", {})):
         var item_id: String = allocate_id("item")
-        items[item_id] = ItemScript.new(item_id, str(item_type), int(recipe["produced_items"][item_type]), job.target_cell)
+        items[item_id] = _create_item_at_projected_cell(item_id, str(item_type), int(recipe["produced_items"][item_type]), job.target_cell)
     order["status"] = "complete"
     order["reserved_item_ids"] = []
     job.status = "complete"
@@ -1580,10 +2196,7 @@ func _complete_build_construction_job(unit, job) -> void:
     construction.status = "complete"
     var definition: Dictionary = get_building_definition(construction.type)
     for footprint_cell in footprint_cells:
-        var cell = world.get_cell(footprint_cell)
-        cell.building_id = building_id
-        if bool(definition.get("blocks_movement", false)):
-            cell.walkable = false
+        _set_building_on_cell_authoritative(footprint_cell, building_id, bool(definition.get("blocks_movement", false)))
     job.status = "complete"
     job.claimed_by_unit_id = unit.id
     unit.current_job_id = ""
@@ -1599,6 +2212,32 @@ func _resource_type_for_job(job_type: String) -> String:
             return "berry"
     return ""
 
+func _resource_id_at_cell(target_cell: Vector2i, resource_type: String = "") -> String:
+    return _resource_id_at_world_cell(_world_cell_for_projected_cell(target_cell), resource_type)
+
+func _resource_id_at_world_cell(target_world_cell: Vector3i, resource_type: String = "") -> String:
+    var payload: Dictionary = _payload_for_world_cell(target_world_cell)
+    if not payload.is_empty() and str(payload.get("resource_id", "")) != "":
+        var cell_resource: Dictionary = resources.get(str(payload.get("resource_id", "")), {})
+        if resource_type == "" or str(cell_resource.get("type", "")) == resource_type:
+            return str(payload.get("resource_id", ""))
+    for id in _sorted_ids(resources):
+        var resource: Dictionary = resources[id]
+        if resource_type != "" and str(resource.get("type", "")) != resource_type:
+            continue
+        var resource_world_cell: Vector3i
+        var raw_world_cell: Array = resource.get("world_cell", [])
+        if raw_world_cell.size() >= 3:
+            resource_world_cell = _array_to_vector3i(raw_world_cell)
+        else:
+            var pos: Array = resource.get("position", [])
+            if pos.size() < 2:
+                continue
+            resource_world_cell = _world_cell_for_projected_cell(Vector2i(int(pos[0]), int(pos[1])))
+        if resource_world_cell == target_world_cell:
+            return str(id)
+    return ""
+
 func _cleanup_completed_jobs() -> void:
     for job_id in job_board.sorted_job_ids():
         if job_board.jobs[job_id].status == "complete":
@@ -1611,6 +2250,7 @@ func canonical_snapshot() -> Dictionary:
         "id_counters": _sorted_dictionary(id_counters),
         "rng_streams": _rng_snapshot(),
         "world": {"width": world.width, "height": world.height, "cells": world.to_canonical_array()},
+        "chunk_world": _authoritative_chunk_snapshot(),
         "resources": _resources_snapshot(),
         "units": _object_snapshot(units),
         "items": _object_snapshot(items),
@@ -1619,6 +2259,13 @@ func canonical_snapshot() -> Dictionary:
         "workshop_orders": _workshop_orders_snapshot(),
         "jobs": job_board.to_canonical_array(),
         "command_queue": _command_queue_snapshot(),
+    }
+
+func _authoritative_chunk_snapshot() -> Dictionary:
+    _ensure_authoritative_chunk_world()
+    return {
+        "metadata": _sorted_dictionary(chunk_world_store.get_metadata()),
+        "cells": chunk_world_store.to_canonical_array(),
     }
 
 func state_hash() -> String:
@@ -1634,7 +2281,11 @@ func _rng_snapshot() -> Dictionary:
 func _resources_snapshot() -> Array:
     var arr: Array = []
     for id in _sorted_ids(resources):
-        var resource: Dictionary = resources[id]
+        var resource: Dictionary = resources[id].duplicate(true)
+        var position: Array = resource.get("position", [])
+        if position.size() >= 2:
+            var world_cell: Vector3i = _world_cell_for_projected_cell(Vector2i(int(position[0]), int(position[1])))
+            resource["world_cell"] = [world_cell.x, world_cell.y, world_cell.z]
         arr.append(_sorted_dictionary(resource))
     return arr
 
@@ -1691,4 +2342,24 @@ func _serialize_cells(cells: Array) -> Array:
     var output: Array = []
     for cell in ZoneScript.canonical_cells(cells):
         output.append([cell.x, cell.y])
+    return output
+
+func _serialize_world_cells(cells: Array) -> Array:
+    var output: Array = []
+    for cell in _world_cells_from_cells(cells):
+        output.append([cell.x, cell.y, cell.z])
+    return output
+
+func _serialize_single_world_cell(cell: Vector3i) -> Array:
+    return [cell.x, cell.y, cell.z]
+
+func _with_world_cells(cells: Array) -> Array:
+    if cells.is_empty():
+        return []
+    return _world_cells_from_cells(cells)
+
+func _with_world_cells_payload(payload: Dictionary) -> Dictionary:
+    var output: Dictionary = payload.duplicate(true)
+    if not output.has("world_cells") and output.has("cells"):
+        output["world_cells"] = _serialize_world_cells(output.get("cells", []))
     return output

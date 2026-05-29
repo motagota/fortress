@@ -101,6 +101,56 @@ func _test_w_key_toggles_workers_panel() -> bool:
     main.free()
     return ok
 
+func _test_d_key_toggles_worldgen_diagnostics_panel() -> bool:
+    var ok := true
+    var hud: CanvasLayer = GameHudScene.instantiate()
+    Engine.get_main_loop().root.add_child(hud)
+    if not hud.is_node_ready():
+        hud._ready()
+
+    var main := MainScript.new()
+    main.hud = hud
+    var event := InputEventKey.new()
+    event.keycode = KEY_D
+    event.pressed = true
+    event.echo = false
+
+    main._unhandled_input(event)
+    ok = _assert(hud.worldgen_diagnostics_panel_visible, "D should show the worldgen diagnostics panel") and ok
+    ok = _assert(hud.get_node("WorldgenDiagnosticsPanel").visible, "worldgen diagnostics panel node should be visible after pressing D") and ok
+    main._unhandled_input(event)
+    ok = _assert(not hud.worldgen_diagnostics_panel_visible, "pressing D again should hide the worldgen diagnostics panel") and ok
+
+    hud.get_parent().remove_child(hud)
+    hud.free()
+    main.free()
+    return ok
+
+func _test_q_e_keys_adjust_full_chunk_cutaway_depth() -> bool:
+    var ok := true
+    var main := MainScript.new()
+    var e_event := InputEventKey.new()
+    e_event.keycode = KEY_E
+    e_event.pressed = true
+    e_event.echo = false
+    var q_event := InputEventKey.new()
+    q_event.keycode = KEY_Q
+    q_event.pressed = true
+    q_event.echo = false
+
+    main._unhandled_input(e_event)
+    ok = _assert(main.layer_cutaway_depth == -1, "E should lower chunk cutaway to the next local layer") and ok
+    for i in range(30):
+        main._unhandled_input(e_event)
+    ok = _assert(main.layer_cutaway_depth == -15, "E should clamp at the bottom visible chunk layer") and ok
+    main._unhandled_input(q_event)
+    ok = _assert(main.layer_cutaway_depth == -14, "Q should raise chunk cutaway by one local layer") and ok
+    for i in range(30):
+        main._unhandled_input(q_event)
+    ok = _assert(main.layer_cutaway_depth == 0, "Q should clamp at the full chunk view") and ok
+    main.free()
+    return ok
+
 func _test_hud_jobs_panel_lists_simulation_jobs() -> bool:
     var ok := true
     var hud: CanvasLayer = GameHudScene.instantiate()
@@ -117,7 +167,32 @@ func _test_hud_jobs_panel_lists_simulation_jobs() -> bool:
     var jobs_label := hud.get_node("JobsPanel/JobsListLabel") as Label
     ok = _assert(jobs_label.text.contains("job_manual_food"), "jobs panel should list job ids, got: %s" % jobs_label.text) and ok
     ok = _assert(jobs_label.text.contains("GATHER_FOOD"), "jobs panel should list job types, got: %s" % jobs_label.text) and ok
-    ok = _assert(jobs_label.text.contains("(4,5)"), "jobs panel should list target cells, got: %s" % jobs_label.text) and ok
+    ok = _assert(jobs_label.text.contains("(4,0,5)"), "jobs panel should list 3D target cells, got: %s" % jobs_label.text) and ok
+
+    hud.get_parent().remove_child(hud)
+    hud.free()
+    return ok
+
+func _test_hud_worldgen_diagnostics_panel_lists_storage_report_without_mutation() -> bool:
+    var ok := true
+    var hud: CanvasLayer = GameHudScene.instantiate()
+    Engine.get_main_loop().root.add_child(hud)
+    if not hud.is_node_ready():
+        hud._ready()
+
+    var sim = SimulationScript.new()
+    sim.initialize_new_game(603)
+    var before_hash: String = sim.state_hash()
+    hud.set_worldgen_diagnostics_panel_visible(true)
+    hud.sync_from_simulation(sim)
+    var after_hash: String = sim.state_hash()
+
+    var diagnostics_label := hud.get_node("WorldgenDiagnosticsPanel/WorldgenDiagnosticsLabel") as Label
+    ok = _assert(before_hash == after_hash, "worldgen diagnostics panel sync should not mutate simulation state") and ok
+    ok = _assert(diagnostics_label.text.contains("Worldgen storage diagnostics passed"), "diagnostics panel should show the report summary, got: %s" % diagnostics_label.text) and ok
+    ok = _assert(diagnostics_label.text.contains("projection valid=true"), "diagnostics panel should show projection comparison status, got: %s" % diagnostics_label.text) and ok
+    ok = _assert(diagnostics_label.text.contains("packed valid=true"), "diagnostics panel should show packed payload status, got: %s" % diagnostics_label.text) and ok
+    ok = _assert(diagnostics_label.text.contains("store model=chunked_3d_v1"), "diagnostics panel should show chunk-store metadata, got: %s" % diagnostics_label.text) and ok
 
     hud.get_parent().remove_child(hud)
     hud.free()
@@ -140,7 +215,7 @@ func _test_hud_workers_panel_lists_simulation_workers() -> bool:
     ok = _assert(workers_list.get_item_count() == 3, "workers panel should list every worker") and ok
     ok = _assert(workers_list.get_item_text(0).contains("Ari"), "workers panel should list worker names, got: %s" % workers_list.get_item_text(0)) and ok
     ok = _assert(workers_list.get_item_text(0).contains("idle"), "workers panel should list worker states, got: %s" % workers_list.get_item_text(0)) and ok
-    ok = _assert(workers_list.get_item_text(0).contains("(1,1)"), "workers panel should list worker positions, got: %s" % workers_list.get_item_text(0)) and ok
+    ok = _assert(workers_list.get_item_text(0).contains("(1,0,1)"), "workers panel should list 3D worker positions, got: %s" % workers_list.get_item_text(0)) and ok
     ok = _assert(workers_list.get_item_text(0).contains("H0 E100"), "workers panel should list worker needs, got: %s" % workers_list.get_item_text(0)) and ok
 
     workers_list.select(0)
@@ -197,7 +272,10 @@ func run() -> bool:
     ok = _test_keyboard_shortcuts_select_tool_modes() and ok
     ok = _test_j_key_toggles_jobs_panel() and ok
     ok = _test_w_key_toggles_workers_panel() and ok
+    ok = _test_d_key_toggles_worldgen_diagnostics_panel() and ok
+    ok = _test_q_e_keys_adjust_full_chunk_cutaway_depth() and ok
     ok = _test_hud_tool_buttons_emit_modes_and_update_status() and ok
     ok = _test_hud_jobs_panel_lists_simulation_jobs() and ok
+    ok = _test_hud_worldgen_diagnostics_panel_lists_storage_report_without_mutation() and ok
     ok = _test_hud_workers_panel_lists_simulation_workers() and ok
     return ok

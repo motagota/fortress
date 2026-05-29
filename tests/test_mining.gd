@@ -219,13 +219,14 @@ func _test_main_mine_drag_queues_each_mineable_cell() -> bool:
         cell.terrain = "dirt"
         cell.resource_id = ""
         _excavate_access_column(sim, Vector2i(x, 8))
+    sim._sync_projected_direct_mutations_to_authoritative()
 
     var main := MainScript.new()
     main.simulation = sim
     main.set_active_tool_mode("mine")
-    main._begin_stockpile_drag(Vector2i(4, 8))
-    main._update_stockpile_drag(Vector2i(5, 8))
-    var result: Dictionary = main._finish_stockpile_drag(Vector2i(5, 8))
+    main._begin_stockpile_drag(sim.world_cell_for_projected_cell(Vector2i(4, 8)))
+    main._update_stockpile_drag(sim.world_cell_for_projected_cell(Vector2i(5, 8)))
+    var result: Dictionary = main._finish_stockpile_drag(sim.world_cell_for_projected_cell(Vector2i(5, 8)))
 
     var ok := true
     ok = _assert(bool(result.get("valid", false)), "mine drag should accept mineable cells") and ok
@@ -241,6 +242,7 @@ func _test_workers_do_not_cross_between_layers_without_an_excavated_column() -> 
 
     var blocked_step: Vector2i = sim._step_towards(from_cell, blocked_layer_cell)
     sim.world.get_cell(Vector2i(1, 0)).terrain = "excavated"
+    sim._sync_projected_direct_mutations_to_authoritative()
     var allowed_step: Vector2i = sim._step_towards(Vector2i(1, 0), blocked_layer_cell)
 
     var ok := true

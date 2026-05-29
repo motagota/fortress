@@ -5,11 +5,13 @@
 [node name="WorldRoot" type="Node3D"]
 script = ExtResource("1_world_renderer")
 
-[node name="Terrain" type="Node3D" parent="."]
+[node name="ChunkVolume" type="Node3D" parent="."]
 
 [node name="Resources" type="Node3D" parent="."]
 
 [node name="Buildings" type="Node3D" parent="."]
+
+[node name="Items" type="Node3D" parent="."]
 
 [node name="Stockpiles" type="Node3D" parent="."]
 

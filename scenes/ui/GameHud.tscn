@@ -152,6 +152,13 @@ offset_right = 460.0
 offset_bottom = 98.0
 text = "Layer 1"
 
+[node name="WorldgenDiagnosticsButton" type="Button" parent="Panel"]
+offset_left = 470.0
+offset_top = 74.0
+offset_right = 594.0
+offset_bottom = 98.0
+text = "D Worldgen"
+
 [node name="JobsPanel" type="Panel" parent="."]
 visible = false
 offset_left = 920.0
@@ -201,4 +208,26 @@ offset_top = 188.0
 offset_right = 340.0
 offset_bottom = 318.0
 text = "Select a worker"
+autowrap_mode = 3
+
+[node name="WorldgenDiagnosticsPanel" type="Panel" parent="."]
+visible = false
+offset_left = 0.0
+offset_top = 166.0
+offset_right = 920.0
+offset_bottom = 320.0
+
+[node name="WorldgenDiagnosticsHeaderLabel" type="Label" parent="WorldgenDiagnosticsPanel"]
+offset_left = 12.0
+offset_top = 10.0
+offset_right = 908.0
+offset_bottom = 34.0
+text = "Worldgen Storage Diagnostics"
+
+[node name="WorldgenDiagnosticsLabel" type="Label" parent="WorldgenDiagnosticsPanel"]
+offset_left = 12.0
+offset_top = 42.0
+offset_right = 908.0
+offset_bottom = 142.0
+text = "Worldgen diagnostics unavailable"
 autowrap_mode = 3

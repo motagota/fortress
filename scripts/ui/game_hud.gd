@@ -5,6 +5,8 @@ signal stockpile_mode_requested(storage_mode: String)
 signal workshop_recipe_requested(recipe_id: String)
 signal layer_depth_requested(delta: int)
 
+const WorldgenDiagnosticsScript := preload("res://scripts/simulation/worldgen_diagnostics.gd")
+
 const TOOL_MODE_INSPECT := "inspect"
 const TOOL_MODE_GATHER_WOOD := "gather_wood"
 const TOOL_MODE_GATHER_STONE := "gather_stone"
@@ -41,11 +43,14 @@ const TOOL_MODE_LABELS := {
 @onready var layer_up_button: Button = $Panel/LayerUpButton
 @onready var layer_down_button: Button = $Panel/LayerDownButton
 @onready var layer_label: Label = $Panel/LayerLabel
+@onready var worldgen_diagnostics_button: Button = $Panel/WorldgenDiagnosticsButton
 @onready var jobs_panel: Panel = $JobsPanel
 @onready var jobs_list_label: Label = $JobsPanel/JobsListLabel
 @onready var workers_panel: Panel = $WorkersPanel
 @onready var workers_list: ItemList = $WorkersPanel/WorkersList
 @onready var worker_detail_label: Label = $WorkersPanel/WorkerDetailLabel
+@onready var worldgen_diagnostics_panel: Panel = $WorldgenDiagnosticsPanel
+@onready var worldgen_diagnostics_label: Label = $WorldgenDiagnosticsPanel/WorldgenDiagnosticsLabel
 
 var sim_clock: SimClock
 var active_tool_mode: String = TOOL_MODE_INSPECT
@@ -58,12 +63,15 @@ var selected_worker_id: String = ""
 var layer_depth: int = 0
 var jobs_panel_visible: bool = false
 var workers_panel_visible: bool = false
+var worldgen_diagnostics_panel_visible: bool = false
 var _last_worker_snapshot: Array = []
+var _last_synced_simulation: Simulation = null
 var _signals_connected: bool = false
 
 func _ready() -> void:
     _refresh_jobs_panel_visibility()
     _refresh_workers_panel_visibility()
+    _refresh_worldgen_diagnostics_panel_visibility()
     _refresh_workshop_buttons()
     _refresh_layer_controls()
     if _signals_connected:
@@ -103,6 +111,8 @@ func _ready() -> void:
         _connect_pressed(layer_up_button, _on_layer_up_pressed)
     if layer_down_button:
         _connect_pressed(layer_down_button, _on_layer_down_pressed)
+    if worldgen_diagnostics_button:
+        _connect_pressed(worldgen_diagnostics_button, _on_worldgen_diagnostics_pressed)
     if workers_list and not workers_list.item_selected.is_connected(_on_worker_selected):
         workers_list.item_selected.connect(_on_worker_selected)
     _signals_connected = true
@@ -151,6 +161,9 @@ func _on_layer_up_pressed() -> void:
 func _on_layer_down_pressed() -> void:
     layer_depth_requested.emit(-1)
 
+func _on_worldgen_diagnostics_pressed() -> void:
+    toggle_worldgen_diagnostics_panel()
+
 func set_active_tool_mode(mode: String) -> bool:
     if not TOOL_MODE_LABELS.has(mode):
         return false
@@ -177,6 +190,15 @@ func set_workers_panel_visible(visible: bool) -> void:
     workers_panel_visible = visible
     _refresh_workers_panel_visibility()
 
+func toggle_worldgen_diagnostics_panel() -> void:
+    set_worldgen_diagnostics_panel_visible(not worldgen_diagnostics_panel_visible)
+
+func set_worldgen_diagnostics_panel_visible(visible: bool) -> void:
+    worldgen_diagnostics_panel_visible = visible
+    _refresh_worldgen_diagnostics_panel_visibility()
+    if worldgen_diagnostics_panel_visible:
+        _refresh_worldgen_diagnostics(_last_synced_simulation)
+
 func set_selected_stockpile(stockpile_id: String, storage_mode: String = "") -> void:
     selected_stockpile_id = stockpile_id
     selected_stockpile_mode = storage_mode
@@ -190,11 +212,12 @@ func set_selected_workshop(workshop_id: String, display_name: String = "") -> vo
     _refresh_status_text(null)
 
 func set_layer_depth(depth: int) -> void:
-    layer_depth = clampi(depth, -4, 0)
+    layer_depth = clampi(depth, -15, 0)
     _refresh_layer_controls()
     _refresh_status_text(null)
 
 func sync_from_simulation(simulation: Simulation) -> void:
+    _last_synced_simulation = simulation
     if selected_stockpile_id != "":
         var found: bool = false
         for stockpile in simulation.canonical_snapshot()["stockpiles"]:
@@ -209,6 +232,7 @@ func sync_from_simulation(simulation: Simulation) -> void:
     _refresh_workshop_buttons()
     _refresh_jobs_list(simulation)
     _refresh_workers_list(simulation)
+    _refresh_worldgen_diagnostics(simulation)
     _refresh_status_text(simulation)
 
 func _refresh_jobs_panel_visibility() -> void:
@@ -221,6 +245,11 @@ func _refresh_workers_panel_visibility() -> void:
         return
     workers_panel.visible = workers_panel_visible
 
+func _refresh_worldgen_diagnostics_panel_visibility() -> void:
+    if worldgen_diagnostics_panel == null:
+        return
+    worldgen_diagnostics_panel.visible = worldgen_diagnostics_panel_visible
+
 func _refresh_jobs_list(simulation: Simulation) -> void:
     if jobs_list_label == null or simulation == null:
         return
@@ -231,15 +260,16 @@ func _refresh_jobs_list(simulation: Simulation) -> void:
         return
     var lines: Array[String] = []
     for job in jobs:
-        var target: Array = job.get("target_cell", [0, 0])
+        var target: Array = job.get("target_world_cell", job.get("target_cell", [0, 0, 0]))
         var claimed_by: String = str(job.get("claimed_by_unit_id", ""))
         var claimed_text: String = "unclaimed" if claimed_by == "" else claimed_by
-        lines.append("%s | %s | %s | (%d,%d) | %s" % [
+        lines.append("%s | %s | %s | (%d,%d,%d) | %s" % [
             str(job.get("id", "")),
             str(job.get("type", "")),
             str(job.get("status", "")),
             int(target[0]),
             int(target[1]),
+            int(target[2]) if target.size() >= 3 else 0,
             claimed_text,
         ])
     jobs_list_label.text = "\n".join(lines)
@@ -257,15 +287,16 @@ func _refresh_workers_list(simulation: Simulation) -> void:
         return
     var selected_index: int = -1
     for worker in workers:
-        var position: Array = worker.get("position", [0, 0])
+        var position: Array = worker.get("world_cell", worker.get("position", [0, 0, 0]))
         var current_job_id: String = str(worker.get("current_job_id", ""))
         var job_text: String = "no job" if current_job_id == "" else current_job_id
         var needs: Dictionary = worker.get("needs", {})
-        workers_list.add_item("%s | %s | (%d,%d) | %s | H%d E%d" % [
+        workers_list.add_item("%s | %s | (%d,%d,%d) | %s | H%d E%d" % [
             str(worker.get("display_name", "")),
             str(worker.get("state", "")),
             int(position[0]),
             int(position[1]),
+            int(position[2]) if position.size() >= 3 else 0,
             job_text,
             int(needs.get("hunger", 0)),
             int(needs.get("energy", 0)),
@@ -324,6 +355,17 @@ func _refresh_worker_detail(workers: Array) -> void:
         int(skills.get("mining", 0)),
     ]
 
+func _refresh_worldgen_diagnostics(simulation: Simulation) -> void:
+    if worldgen_diagnostics_label == null or not worldgen_diagnostics_panel_visible:
+        return
+    if simulation == null or not simulation.has_method("get_worldgen_storage_diagnostics"):
+        worldgen_diagnostics_label.text = "Worldgen diagnostics unavailable"
+        return
+    var report: Dictionary = simulation.get_worldgen_storage_diagnostics()
+    var lines: Array[String] = []
+    lines = WorldgenDiagnosticsScript.format_report(report)
+    worldgen_diagnostics_label.text = "\n".join(lines)
+
 func _find_worker_snapshot(workers: Array, worker_id: String) -> Dictionary:
     for worker in workers:
         if str(worker.get("id", "")) == worker_id:
@@ -361,11 +403,11 @@ func _refresh_workshop_buttons() -> void:
 
 func _refresh_layer_controls() -> void:
     if layer_label != null:
-        layer_label.text = "Layer %d" % (1 - layer_depth)
+        layer_label.text = "Chunk Layer %d" % (1 - layer_depth)
     if layer_up_button != null:
         layer_up_button.disabled = layer_depth >= 0
     if layer_down_button != null:
-        layer_down_button.disabled = layer_depth <= -4
+        layer_down_button.disabled = layer_depth <= -15
 
 func _set_mode_button_state(button: Button, enabled: bool, active: bool) -> void:
     if button == null:
@@ -389,7 +431,7 @@ func _refresh_status_text(simulation: Simulation) -> void:
     var workshop_str: String = ""
     if selected_workshop_id != "":
         workshop_str = " | Workshop %s" % selected_workshop_name
-    var layer_str: String = " | Layer %d" % (1 - layer_depth)
+    var layer_str: String = " | Chunk Layer %d" % (1 - layer_depth)
     var warning_str: String = ""
     if last_warning != "":
         warning_str = " | Warning: " + last_warning

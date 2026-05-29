@@ -4,6 +4,7 @@ extends RefCounted
 var id: String
 var display_name: String
 var position: Vector2i
+var world_cell: Vector3i
 var inventory: Array[String] = []
 var allowed_jobs: Array[String] = ["CHOP_TREE", "GATHER_STONE", "GATHER_FOOD", "MINE_CELL", "HAUL_ITEM", "BUILD_CONSTRUCTION", "COOK_MEAL"]
 var job_type_priorities: Dictionary = {}
@@ -17,9 +18,17 @@ func _init(pid: String = "", pname: String = "Unit", pposition: Vector2i = Vecto
     id = pid
     display_name = pname
     position = pposition
+    world_cell = Vector3i(pposition.x, 0, pposition.y)
 
 func distance_to_cell(cell: Vector2i) -> int:
     return abs(position.x - cell.x) + abs(position.y - cell.y)
+
+func distance_to_world_cell(cell: Vector3i) -> int:
+    return abs(world_cell.x - cell.x) + abs(world_cell.y - cell.y) + abs(world_cell.z - cell.z)
+
+func set_projected_position(projected_cell: Vector2i, pworld_cell: Vector3i) -> void:
+    position = projected_cell
+    world_cell = pworld_cell
 
 func set_job_type_priority(job_type: String, priority: int) -> void:
     var normalized_type: String = str(job_type).strip_edges().to_upper()
@@ -51,6 +60,7 @@ func to_canonical_dict() -> Dictionary:
         "id": id,
         "display_name": display_name,
         "position": [position.x, position.y],
+        "world_cell": [world_cell.x, world_cell.y, world_cell.z],
         "inventory": inv,
         "allowed_jobs": allowed,
         "job_type_priorities": _canonical_job_type_priorities(),
