@@ -1,0 +1,42 @@
+class_name WorldConstants
+extends RefCounted
+
+const TERRAIN_DIRT := "dirt"
+const TERRAIN_EXCAVATED := "excavated"
+const TERRAIN_GRASS := "grass"
+const TERRAIN_ROCK := "rock"
+const TERRAIN_SOLID_ROCK := "solid_rock"
+const TERRAIN_COLLAPSED := "collapsed"
+
+const MATERIAL_AIR := "AIR"
+const MATERIAL_DIRT := "DIRT"
+const MATERIAL_CLAY := "CLAY"
+const MATERIAL_GRAVEL := "GRAVEL"
+const MATERIAL_WATER_FLOW := "WATER_FLOW"
+const MATERIAL_SOFT_ROCK := "SOFT_ROCK"
+const MATERIAL_HARD_ROCK := "HARD_ROCK"
+const MATERIAL_BEDROCK := "BEDROCK"
+const MATERIAL_LAVA := "LAVA"
+const MATERIAL_GRASS := "GRASS"
+const MATERIAL_LOOSE_STONE := "LOOSE_STONE"
+const MATERIAL_TREE_OAK := "TREE_OAK"
+const MATERIAL_TREE_PINE := "TREE_PINE"
+const MATERIAL_BERRY_BUSH := "BERRY_BUSH"
+const MATERIAL_WILD_WHEAT := "WILD_WHEAT"
+const MATERIAL_ORE_COAL := "ORE_COAL"
+const MATERIAL_ORE_COPPER := "ORE_COPPER"
+const MATERIAL_ORE_IRON := "ORE_IRON"
+const MATERIAL_ORE_SILVER := "ORE_SILVER"
+const MATERIAL_ORE_GOLD := "ORE_GOLD"
+const MATERIAL_OIL := "OIL"
+
+const STRATA_SURFACE := "surface"
+const STRATA_SOIL := "soil"
+const STRATA_SOFT_ROCK := "soft_rock"
+const STRATA_DEEP_SOIL := "deep_soil"
+const STRATA_HARD_ROCK := "hard_rock"
+
+const MINING_TIER_NONE := 0
+const MINING_TIER_BASIC := 1
+const MINING_TIER_HARD_ROCK := 2
+const MINING_TIER_RARE_ORE := 3

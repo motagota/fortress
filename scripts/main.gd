@@ -146,12 +146,12 @@ func _pick_grid_cell_from_mouse_position(mouse_position: Vector2) -> Vector2i:
 
 func _pick_world_cell_from_mouse_position(mouse_position: Vector2) -> Vector3i:
     _resolve_child_nodes()
-    if camera == null or world_root == null or simulation == null or simulation.world == null:
+    if camera == null or world_root == null or simulation == null:
         return INVALID_WORLD_CELL
     var ray_origin: Vector3 = camera.project_ray_origin(mouse_position)
     var ray_direction: Vector3 = camera.project_ray_normal(mouse_position)
     if world_root.has_method("ray_to_world_cell"):
-        return world_root.ray_to_world_cell(ray_origin, ray_direction, simulation.world)
+        return world_root.ray_to_world_cell(ray_origin, ray_direction)
     if not world_root.has_method("ray_to_grid_cell"):
         return INVALID_WORLD_CELL
     var projected_cell: Vector2i = world_root.ray_to_grid_cell(ray_origin, ray_direction, simulation.world)

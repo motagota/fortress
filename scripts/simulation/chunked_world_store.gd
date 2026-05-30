@@ -160,7 +160,7 @@ func import_playable_chunk_volume(projected_world, origin_world_cell: Vector3i =
             for local_x in range(chunk_size):
                 var volume_local_cell := Vector3i(local_x, local_y, local_z)
                 var world_cell := origin_world_cell + volume_local_cell
-                var payload: Dictionary = _payload_for_playable_volume_cell(projected_world, world_cell, volume_local_cell)
+                var payload: Dictionary = _payload_for_playable_volume_cell(projected_world, volume_local_cell)
                 var source: Dictionary = _source_for_actual_volume_cell(projected_world, world_cell, Vector3i.ZERO)
                 source["import_model"] = PLAYABLE_CHUNK_IMPORT_MODEL
                 source["volume_local_cell"] = ChunkAddressingScript.vector3i_to_array(volume_local_cell)
@@ -511,12 +511,12 @@ func _payload_for_actual_volume_cell(projected_world, world_cell: Vector3i) -> D
         "slope_degrees": slope_degrees,
     }
 
-func _payload_for_playable_volume_cell(projected_world, world_cell: Vector3i, volume_local_cell: Vector3i) -> Dictionary:
+func _payload_for_playable_volume_cell(projected_world, volume_local_cell: Vector3i) -> Dictionary:
     if volume_local_cell.y == chunk_size - 1:
-        return _payload_for_cross_section_surface_cell(projected_world, world_cell, volume_local_cell)
-    return _payload_for_cross_section_depth_cell(projected_world, world_cell, volume_local_cell)
+        return _payload_for_cross_section_surface_cell(projected_world, volume_local_cell)
+    return _payload_for_cross_section_depth_cell(projected_world, volume_local_cell)
 
-func _payload_for_cross_section_surface_cell(projected_world, world_cell: Vector3i, volume_local_cell: Vector3i) -> Dictionary:
+func _payload_for_cross_section_surface_cell(projected_world, volume_local_cell: Vector3i) -> Dictionary:
     var xz := Vector2i(volume_local_cell.x, volume_local_cell.z)
     var material_key: String = "GRASS"
     var terrain: String = "grass"
@@ -536,7 +536,7 @@ func _payload_for_cross_section_surface_cell(projected_world, world_cell: Vector
                 water_feature = "riverbank"
     return _cross_section_payload(projected_world, xz, terrain, material_key, "surface", 1, "sky", is_river, water_feature)
 
-func _payload_for_cross_section_depth_cell(projected_world, world_cell: Vector3i, volume_local_cell: Vector3i) -> Dictionary:
+func _payload_for_cross_section_depth_cell(projected_world, volume_local_cell: Vector3i) -> Dictionary:
     var xz := Vector2i(volume_local_cell.x, volume_local_cell.z)
     var local_y: int = volume_local_cell.y
     var material_key: String = "HARD_ROCK"

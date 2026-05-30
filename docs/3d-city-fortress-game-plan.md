@@ -171,23 +171,26 @@ Multiplayer path this preserves:
 - Fast speed advances multiple steps.
 - Systems receive deterministic tick counts.
 
-### 2. Grid World Model
+### 2. Chunk World Model
 
-Represent the world as a grid of cells, even though displayed in 3D.
+The world is a 3D volume of cells stored in `ChunkedWorldStore`. Cells are addressed by `world_cell: Vector3i(x, y, z)` where x is east, z is south, and y increases upward (y=0 is the surface reference, negative y is underground).
 
-Each cell can hold:
+Each cell payload holds:
 
-- Terrain type: grass, dirt, stone, water later.
-- Walkable flag.
-- Resource node reference.
-- Building reference.
-- Zone reference.
+- `terrain` and `material_key`: what the cell is made of.
+- `walkable`: whether units can stand here.
+- `strata_key` and `mining_tier_required`: what tools are needed to excavate.
+- `resource_id` and `building_id`: occupant references.
+- `is_cave`, `is_river`, `exposure`: environmental flags.
+- `surface_height`, `slope_degrees`: terrain shape metadata.
+
+World generation (`WorldGen`) writes cells directly into `ChunkedWorldStore`. There is no 2D projection layer. Pathfinding, picking, and mutation all operate on `world_cell` coordinates.
 
 **Testable behaviors:**
-- Grid creates expected width/height/depth or x/z dimensions.
-- Cell lookup bounds are enforced.
-- Occupied/unwalkable cells affect path/job validity.
-- Resource/building placement updates cell state.
+- `WorldGen.generate()` produces the expected cell count and strata distribution for a given seed.
+- Cell lookup by world_cell is deterministic and bounds-safe.
+- Mining a cell updates the chunk store payload and is reflected in pathfinding.
+- Same seed produces the same canonical chunk store hash.
 
 ### 3. Resource and Item Model
 
@@ -435,18 +438,21 @@ fortress/
 │   ├── simulation/
 │   │   ├── simulation.gd
 │   │   ├── sim_clock.gd
-│   │   ├── grid_world.gd
-│   │   ├── cell.gd
+│   │   ├── world_constants.gd       ← terrain/material/strata/mining-tier constants
+│   │   ├── worldgen.gd              ← generates cells directly into ChunkedWorldStore
+│   │   ├── chunked_world_store.gd   ← authoritative 3D cell store
+│   │   ├── chunk_addressing.gd      ← world↔chunk↔local coordinate math
+│   │   ├── chunked_world_read_adapter.gd
 │   │   ├── unit.gd
 │   │   ├── job.gd
 │   │   ├── job_board.gd
 │   │   ├── item.gd
 │   │   ├── stockpile.gd
-│   │   ├── building.gd
+│   │   ├── building_definition.gd
+│   │   ├── construction_record.gd
 │   │   ├── technology.gd
 │   │   ├── recipe.gd
-│   │   ├── production_building.gd
-│   │   └── pathfinder.gd
+│   │   └── production_building.gd
 │   ├── presentation/
 │   │   ├── world_renderer.gd
 │   │   ├── unit_view.gd
@@ -464,7 +470,7 @@ fortress/
 │   ├── static_project_checks.py
 │   ├── run_godot_tests.gd
 │   ├── test_sim_clock.gd
-│   ├── test_grid_world.gd
+│   ├── test_chunk_world.gd          ← replaces test_grid_world.gd
 │   ├── test_job_board.gd
 │   ├── test_determinism_replay.gd
 │   ├── test_command_ordering.gd
@@ -475,7 +481,8 @@ fortress/
 │   └── test_needs.gd
 └── docs/
     ├── 3d-city-fortress-game-plan.md
-    └── milestones/
+    ├── ironveil-worldgen-chunk-architecture.md
+    └── ironveil-world-generation-tasks.md
 ```
 
 ---
@@ -517,7 +524,7 @@ Expected: exits 0 with empty/smoke test pass.
 ### Tasks
 
 1. Implement `sim_clock.gd`.
-2. Implement `grid_world.gd` and `cell.gd`.
+2. Implement `world_constants.gd`, `worldgen.gd`, `chunked_world_store.gd`, and `chunk_addressing.gd`.
 3. Implement `item.gd`, `unit.gd`, `job.gd`, and `job_board.gd`.
 4. Implement deterministic command queue and canonical command ordering.
 5. Implement deterministic id allocation for units, jobs, items, buildings, and commands.
@@ -528,7 +535,7 @@ Expected: exits 0 with empty/smoke test pass.
 ### Conclusive Tests
 
 - `test_sim_clock.gd`: pause/speed/tick events.
-- `test_grid_world.gd`: cell placement/bounds/walkability.
+- `test_chunk_world.gd`: cell placement, world-cell bounds, walkability, and worldgen determinism.
 - `test_job_board.gd`: job creation, claiming, priority, completion.
 - `test_determinism_replay.gd`: same snapshot + same commands + same tick count produces identical `state_hash()` across repeated runs.
 - `test_command_ordering.gd`: commands for the same tick are applied in canonical `(tick, command_id)` order.
@@ -800,19 +807,20 @@ Avoid mining, crafting chains, combat, and deep procedural generation until this
 1. Project/test harness.
 2. Simulation clock.
 3. Deterministic command queue, seeded RNG, ids, canonical state hash.
-4. Grid world.
+4. Chunk world (`WorldGen` + `ChunkedWorldStore`, no projection layer).
 5. Units/jobs/items data models.
 6. Job assignment and completion.
-7. 3D blockout visualization.
+7. 3D blockout visualization (chunk-based renderer, no GridWorld).
 8. Camera and HUD.
-9. Designation tools.
+9. Designation tools (world-cell picking).
 10. Stockpiles and hauling.
-11. Construction.
+11. Construction (surface and underground).
 12. Needs.
 13. Technology graph and recipes.
 14. Crafting/production chains.
-15. MVP city-loop integration test.
-16. Manual playtest and tuning.
+15. Vertical world expansion (deeper mining, wider map).
+16. MVP city-loop integration test.
+17. Manual playtest and tuning.
 
 ---
 
@@ -824,7 +832,7 @@ Mitigation: simulation code may not use frame delta, wall-clock time, global ran
 
 ### Risk: Too much Dwarf Fortress complexity too early
 
-Mitigation: one flat grid, few resources, few jobs, no z-levels for MVP.
+Mitigation: start with the current 16×4 surface footprint and 5 strata layers, few resources, few jobs. Expand z-levels only after the core loop is solid (see Task 20 in worldgen tasks).
 
 ### Risk: 3D visuals obscure simulation state
 

@@ -1,9 +1,9 @@
-[gd_scene load_steps=5 format=3 uid="uid://fortress_main"]
+[gd_scene load_steps=5 format=3 uid="uid://dx45wpd5erg8l"]
 
-[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://bx0bv3lmyfuyl" path="res://scripts/main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://scenes/world/WorldRoot.tscn" id="2_world"]
-[ext_resource type="Script" path="res://scripts/presentation/camera_controller.gd" id="3_camera"]
-[ext_resource type="PackedScene" path="res://scenes/ui/GameHud.tscn" id="4_hud"]
+[ext_resource type="Script" uid="uid://cqrrs7h3e0jc2" path="res://scripts/presentation/camera_controller.gd" id="3_camera"]
+[ext_resource type="PackedScene" uid="uid://bc18tmyo5n4pm" path="res://scenes/ui/GameHud.tscn" id="4_hud"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -11,9 +11,9 @@ script = ExtResource("1_main")
 [node name="WorldRoot" parent="." instance=ExtResource("2_world")]
 
 [node name="Camera3D" type="Camera3D" parent="."]
-script = ExtResource("3_camera")
 transform = Transform3D(0.866025, -0.353553, 0.353553, 0, 0.707107, 0.707107, -0.5, -0.612372, 0.612372, 8, 10, 18)
 current = true
+script = ExtResource("3_camera")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.707107, -0.353553, 0.612372, 0, 0.866025, 0.5, -0.707107, -0.353553, 0.612372, 0, 8, 0)

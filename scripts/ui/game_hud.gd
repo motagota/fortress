@@ -24,7 +24,7 @@ const TOOL_MODE_LABELS := {
     TOOL_MODE_PLACE_KITCHEN: "Kitchen",
 }
 
-@onready var label: Label = $Panel/StatusLabel
+@onready var label: Label = $Panel/SimInfo/StatusLabel
 @onready var pause_button: Button = $Panel/PauseButton
 @onready var speed_1x: Button = $Panel/Speed1x
 @onready var speed_2x: Button = $Panel/Speed2x
@@ -36,9 +36,9 @@ const TOOL_MODE_LABELS := {
 @onready var mine_button: Button = $Panel/MineButton
 @onready var stockpile_button: Button = $Panel/StockpileButton
 @onready var kitchen_button: Button = $Panel/KitchenButton
-@onready var storage_only_button: Button = $Panel/StorageOnlyButton
-@onready var supply_only_button: Button = $Panel/SupplyOnlyButton
-@onready var both_mode_button: Button = $Panel/BothModeButton
+@onready var storage_only_button: Button = $Panel/StockpileConfig/StorageOnlyButton
+@onready var supply_only_button: Button = $Panel/StockpileConfig/SupplyOnlyButton
+@onready var both_mode_button: Button = $Panel/StockpileConfig/BothModeButton
 @onready var cook_meal_button: Button = $Panel/CookMealButton
 @onready var layer_up_button: Button = $Panel/LayerUpButton
 @onready var layer_down_button: Button = $Panel/LayerDownButton
@@ -179,22 +179,22 @@ func show_warning(warning: String) -> void:
 func toggle_jobs_panel() -> void:
     set_jobs_panel_visible(not jobs_panel_visible)
 
-func set_jobs_panel_visible(visible: bool) -> void:
-    jobs_panel_visible = visible
+func set_jobs_panel_visible(panel_visible: bool) -> void:
+    jobs_panel_visible = panel_visible
     _refresh_jobs_panel_visibility()
 
 func toggle_workers_panel() -> void:
     set_workers_panel_visible(not workers_panel_visible)
 
-func set_workers_panel_visible(visible: bool) -> void:
-    workers_panel_visible = visible
+func set_workers_panel_visible(panel_visible: bool) -> void:
+    workers_panel_visible = panel_visible
     _refresh_workers_panel_visibility()
 
 func toggle_worldgen_diagnostics_panel() -> void:
     set_worldgen_diagnostics_panel_visible(not worldgen_diagnostics_panel_visible)
 
-func set_worldgen_diagnostics_panel_visible(visible: bool) -> void:
-    worldgen_diagnostics_panel_visible = visible
+func set_worldgen_diagnostics_panel_visible(panel_visible: bool) -> void:
+    worldgen_diagnostics_panel_visible = panel_visible
     _refresh_worldgen_diagnostics_panel_visibility()
     if worldgen_diagnostics_panel_visible:
         _refresh_worldgen_diagnostics(_last_synced_simulation)

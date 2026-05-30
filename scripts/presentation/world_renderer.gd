@@ -4,7 +4,6 @@ extends Node3D
 # it must never mutate simulation state or feed camera/scene-tree data back into sim.
 
 const UnitViewScene := preload("res://scenes/units/UnitView.tscn")
-const ChunkedWorldStoreScript := preload("res://scripts/simulation/chunked_world_store.gd")
 const INVALID_CELL := Vector2i(-1, -1)
 const CELL_HEIGHT_FACTOR := 1.0
 const MIN_LAYER_DEPTH := -15
@@ -32,6 +31,7 @@ var hover_valid: bool = true
 var _cell_surface_y: Dictionary = {}
 var _cell_surface_height: Dictionary = {}
 var _cell_render_z: Dictionary = {}
+var _last_visible_cells: Dictionary = {}
 
 func _ready() -> void:
     pass
@@ -74,75 +74,45 @@ func set_hover_cell(cell: Vector2i, valid: bool = true) -> void:
     hover_valid = valid
     _sync_hover_cell()
 
-func world_position_to_cell(world_position: Vector3, grid_world) -> Vector2i:
-    if grid_world == null or tile_size <= 0.0:
-        return INVALID_CELL
-    var display_cell := Vector2i(int(floor(world_position.x / tile_size)), int(floor(world_position.z / tile_size)))
-    if display_cell.x < 0 or display_cell.y < 0:
-        return INVALID_CELL
-    if layer_cutaway_depth == 0:
-        if display_cell.x >= int(grid_world.width) or display_cell.y >= int(grid_world.height):
-            return INVALID_CELL
-        var direct_cell = grid_world.get_cell(display_cell)
-        if direct_cell != null and _is_visible_pick_cell(direct_cell):
-            return display_cell
-        return _top_visible_cell_at_display_cell(display_cell, grid_world)
-    return _top_visible_cell_at_display_cell(display_cell, grid_world)
-
-func ray_to_grid_cell(ray_origin: Vector3, ray_direction: Vector3, grid_world) -> Vector2i:
-    if absf(ray_direction.y) < 0.00001:
-        return INVALID_CELL
-    if grid_world == null or tile_size <= 0.0:
-        return INVALID_CELL
-    if layer_cutaway_depth == 0:
-        return _ray_to_surface_grid_cell(ray_origin, ray_direction, grid_world)
-    var best_cell: Vector2i = INVALID_CELL
+func ray_to_world_cell(ray_origin: Vector3, ray_direction: Vector3) -> Vector3i:
+    const INVALID := Vector3i(-2147483648, -2147483648, -2147483648)
+    if tile_size <= 0.0:
+        return INVALID
+    var best_world_cell := INVALID
     var best_distance: float = INF
-    for z in range(int(grid_world.height)):
-        for x in range(int(grid_world.width)):
-            var cell := Vector2i(x, z)
-            var sim_cell = grid_world.get_cell(cell)
-            if sim_cell == null or not _is_visible_pick_cell(sim_cell):
-                continue
-            var surface_y: float = _surface_y_for_depth(int(sim_cell.depth))
-            var distance_to_plane: float = (surface_y - ray_origin.y) / ray_direction.y
-            if distance_to_plane < 0.0 or distance_to_plane >= best_distance:
-                continue
-            var hit_position: Vector3 = ray_origin + (ray_direction * distance_to_plane)
-            var display_cell := Vector2i(int(floor(hit_position.x / tile_size)), int(floor(hit_position.z / tile_size)))
-            if display_cell.x == cell.x and display_cell.y == _render_z_for_grid_cell(grid_world, cell):
-                best_cell = cell
-                best_distance = distance_to_plane
-    return best_cell
+    var half_x: float = tile_size * 0.5
+    var half_y: float = _cell_height() * 0.5
+    var half_z: float = tile_size * 0.5
+    for cell_data in _last_visible_cells.values():
+        var world_cell: Vector3i = cell_data.get("world_cell", INVALID)
+        if world_cell == INVALID:
+            continue
+        var center := Vector3(
+            float(world_cell.x) * tile_size,
+            float(world_cell.y) * _cell_height() - half_y,
+            float(world_cell.z) * tile_size
+        )
+        var t: float = _ray_box_distance(ray_origin, ray_direction, center, half_x, half_y, half_z)
+        if t >= 0.0 and t < best_distance:
+            best_distance = t
+            best_world_cell = world_cell
+    return best_world_cell
 
-func ray_to_world_cell(ray_origin: Vector3, ray_direction: Vector3, grid_world) -> Vector3i:
-    var projected_cell: Vector2i = ray_to_grid_cell(ray_origin, ray_direction, grid_world)
-    if projected_cell == INVALID_CELL or grid_world == null or not grid_world.has_method("get_storage_address_for_projected_cell"):
-        return Vector3i(-2147483648, -2147483648, -2147483648)
-    var address: Dictionary = grid_world.get_storage_address_for_projected_cell(projected_cell)
-    if not bool(address.get("valid", false)):
-        return Vector3i(-2147483648, -2147483648, -2147483648)
-    return _array_to_vector3i(address.get("world_cell", []))
-
-func _ray_to_surface_grid_cell(ray_origin: Vector3, ray_direction: Vector3, grid_world) -> Vector2i:
-    var best_cell: Vector2i = INVALID_CELL
-    var best_distance: float = INF
-    for z in range(int(grid_world.height)):
-        for x in range(int(grid_world.width)):
-            var cell := Vector2i(x, z)
-            var surface_y: float = 0.0
-            if grid_world.has_method("get_surface_height"):
-                surface_y = float(grid_world.get_surface_height(cell)) * _cell_height()
-            var distance_to_plane: float = (surface_y - ray_origin.y) / ray_direction.y
-            if distance_to_plane < 0.0 or distance_to_plane >= best_distance:
-                continue
-            var hit_position: Vector3 = ray_origin + (ray_direction * distance_to_plane)
-            var display_cell := Vector2i(int(floor(hit_position.x / tile_size)), int(floor(hit_position.z / tile_size)))
-            if display_cell == cell:
-                var sim_cell = grid_world.get_cell(cell)
-                best_cell = cell if sim_cell != null and _is_visible_pick_cell(sim_cell) else _top_visible_cell_at_display_cell(cell, grid_world)
-                best_distance = distance_to_plane
-    return best_cell
+func _ray_box_distance(origin: Vector3, direction: Vector3, center: Vector3, hx: float, hy: float, hz: float) -> float:
+    var inv_dx: float = (1.0 / direction.x) if absf(direction.x) > 0.0001 else 1e18
+    var inv_dy: float = (1.0 / direction.y) if absf(direction.y) > 0.0001 else 1e18
+    var inv_dz: float = (1.0 / direction.z) if absf(direction.z) > 0.0001 else 1e18
+    var t1x: float = (center.x - hx - origin.x) * inv_dx
+    var t2x: float = (center.x + hx - origin.x) * inv_dx
+    var t1y: float = (center.y - hy - origin.y) * inv_dy
+    var t2y: float = (center.y + hy - origin.y) * inv_dy
+    var t1z: float = (center.z - hz - origin.z) * inv_dz
+    var t2z: float = (center.z + hz - origin.z) * inv_dz
+    var t_min: float = maxf(maxf(minf(t1x, t2x), minf(t1y, t2y)), minf(t1z, t2z))
+    var t_max: float = minf(minf(maxf(t1x, t2x), maxf(t1y, t2y)), maxf(t1z, t2z))
+    if t_max < 0.0 or t_min > t_max:
+        return -1.0
+    return t_min if t_min >= 0.0 else t_max
 
 func _resolve_child_roots() -> void:
     # Headless tests can instantiate Main.tscn and call sync_from_simulation()
@@ -215,30 +185,28 @@ func _resolve_child_roots() -> void:
         add_child(debug_labels_root)
 
 func _sync_chunk_volume(simulation: Simulation) -> void:
-    if chunk_volume_root == null or simulation == null or simulation.world == null:
-        return
-    var store = ChunkedWorldStoreScript.new(RENDERED_CHUNK_SIZE)
-    var report: Dictionary = store.import_playable_chunk_volume(simulation.world)
-    if not bool(report.get("valid", false)):
-        _remove_unseen_children(chunk_volume_root, {})
+    if chunk_volume_root == null or simulation == null or simulation.chunk_world_store == null:
+        _last_visible_cells = {}
         return
     chunk_volume_root.visible = true
-    var visible_cells: Dictionary = _visible_solid_chunk_cells_from_store(store)
-    var mesh_data_by_material: Dictionary = _build_greedy_chunk_mesh_data(visible_cells)
+    _last_visible_cells = _visible_solid_chunk_cells_from_store(simulation.chunk_world_store)
+    var mesh_data_by_material: Dictionary = _build_greedy_chunk_mesh_data(_last_visible_cells)
     _sync_chunk_mesh_nodes(mesh_data_by_material)
 
 func _visible_solid_chunk_cells_from_store(store) -> Dictionary:
     var visible_cells: Dictionary = {}
     for stored in store.to_canonical_array():
         var world_cell := _array_to_vector3i(stored.get("world_cell", []))
-        var source: Dictionary = stored.get("source", {})
-        var local_cell := _array_to_vector3i(source.get("volume_local_cell", stored.get("local_cell", [])))
         var payload: Dictionary = stored.get("payload", {})
-        if not _chunk_local_cell_visible_by_cutaway(local_cell) or not _chunk_payload_is_solid(payload):
+        if not _world_cell_visible_by_cutaway(world_cell) or not _chunk_payload_is_solid(payload):
             continue
-        var render_cell := Vector3i(local_cell.x, local_cell.y + int(payload.get("surface_height", 0)), local_cell.z)
+        # Map world_cell.y to a render_y integer in the greedy mesh coordinate space.
+        # render_y = world_cell.y + RENDERED_CHUNK_SIZE - 1 so that:
+        #   surface (y=0) → render_y=15, soil (y=-1) → render_y=14, etc.
+        var render_y: int = world_cell.y + RENDERED_CHUNK_SIZE - 1
+        var render_cell := Vector3i(world_cell.x, render_y, world_cell.z)
         visible_cells[_chunk_local_key(render_cell)] = {
-            "local_cell": local_cell,
+            "world_cell": world_cell,
             "render_cell": render_cell,
             "payload": payload,
             "world_y": world_cell.y,
@@ -654,9 +622,9 @@ func _update_resource_node(node: Node3D, resource: Dictionary) -> void:
     node.visible = _resource_is_available(resource)
     match str(resource["type"]):
         "stone":
-            _sync_stone_scatter_visual(node, resource)
+            _sync_stone_scatter_visual(node)
         "berry":
-            _sync_berry_scatter_visual(node, resource)
+            _sync_berry_scatter_visual(node)
         _:
             _sync_tree_scatter_visual(node, resource)
 
@@ -680,7 +648,7 @@ func _sync_tree_scatter_visual(root: Node3D, resource: Dictionary) -> void:
     _sync_resource_box_part(root, seen, "CanopyUpper", Vector3(0.62, 0.42, 0.62), Vector3(0.0, 1.42, 0.0), leaf_material)
     _remove_unseen_children(root, seen)
 
-func _sync_berry_scatter_visual(root: Node3D, resource: Dictionary) -> void:
+func _sync_berry_scatter_visual(root: Node3D) -> void:
     var seen: Dictionary = {}
     var leaf_material := _make_material(Color(0.10, 0.32, 0.12))
     var berry_material := _make_material(Color(0.70, 0.06, 0.12))
@@ -691,7 +659,7 @@ func _sync_berry_scatter_visual(root: Node3D, resource: Dictionary) -> void:
     _sync_resource_box_part(root, seen, "BerryC", Vector3(0.10, 0.10, 0.10), Vector3(0.12, 0.50, 0.22), berry_material)
     _remove_unseen_children(root, seen)
 
-func _sync_stone_scatter_visual(root: Node3D, resource: Dictionary) -> void:
+func _sync_stone_scatter_visual(root: Node3D) -> void:
     var seen: Dictionary = {}
     var material := _make_material(Color(0.42, 0.42, 0.46))
     _sync_resource_box_part(root, seen, "BoulderA", Vector3(0.58, 0.28, 0.46), Vector3(-0.08, 0.14, 0.02), material)
@@ -1082,21 +1050,12 @@ func _cache_cell_surface_heights(snapshot: Dictionary) -> void:
     _cell_surface_y = {}
     _cell_surface_height = {}
     _cell_render_z = {}
-    var first_row_by_depth: Dictionary = {}
     for cell_data in snapshot.get("world", {}).get("cells", []):
         var cell := Vector2i(int(cell_data.get("x", 0)), int(cell_data.get("z", 0)))
         var depth: int = int(cell_data.get("depth", 0))
         _cell_surface_y[_cell_key(cell)] = _surface_y_for_depth(depth)
         _cell_surface_height[_cell_key(cell)] = int(cell_data.get("surface_height", 0))
-        var depth_key: String = str(depth)
-        if not first_row_by_depth.has(depth_key):
-            first_row_by_depth[depth_key] = cell.y
-        else:
-            first_row_by_depth[depth_key] = mini(int(first_row_by_depth[depth_key]), cell.y)
-    for cell_data in snapshot.get("world", {}).get("cells", []):
-        var cell := Vector2i(int(cell_data.get("x", 0)), int(cell_data.get("z", 0)))
-        var depth_key: String = str(int(cell_data.get("depth", 0)))
-        _cell_render_z[_cell_key(cell)] = cell.y - int(first_row_by_depth.get(depth_key, 0))
+        _cell_render_z[_cell_key(cell)] = cell.y
 
 func _surface_y_for_cell(cell: Vector2i) -> float:
     return float(_cell_surface_y.get(_cell_key(cell), 0.0))
@@ -1107,35 +1066,6 @@ func _height_for_cell(cell: Vector2i) -> int:
 func _surface_y_for_depth(depth: int) -> float:
     return float(depth) * _cell_height()
 
-func _top_visible_cell_at_display_cell(display_cell: Vector2i, grid_world) -> Vector2i:
-    var best_cell: Vector2i = INVALID_CELL
-    var best_depth: int = -999999
-    for z in range(int(grid_world.height)):
-        var cell := Vector2i(display_cell.x, z)
-        var sim_cell = grid_world.get_cell(cell)
-        if sim_cell == null or not _is_visible_pick_cell(sim_cell):
-            continue
-        if _render_z_for_grid_cell(grid_world, cell) != display_cell.y:
-            continue
-        var depth: int = int(sim_cell.depth)
-        if best_cell == INVALID_CELL or depth > best_depth:
-            best_cell = cell
-            best_depth = depth
-    return best_cell
-
-func _is_visible_pick_cell(sim_cell) -> bool:
-    return _depth_visible_by_cutaway(int(sim_cell.depth)) and str(sim_cell.terrain) != "excavated"
-
-func _render_z_for_grid_cell(grid_world, cell: Vector2i) -> int:
-    var sim_cell = grid_world.get_cell(cell)
-    if sim_cell == null:
-        return cell.y
-    var depth: int = int(sim_cell.depth)
-    for z in range(int(grid_world.height)):
-        var layer_cell = grid_world.get_cell(Vector2i(cell.x, z))
-        if layer_cell != null and int(layer_cell.depth) == depth:
-            return cell.y - z
-    return cell.y
 
 func _render_position_for_cell(cell: Vector2i, y_offset: float = 0.0) -> Vector3:
     return Vector3(cell.x * tile_size, _surface_y_for_cell(cell) + y_offset, _render_z_for_cell(cell) * tile_size)
@@ -1149,12 +1079,6 @@ func _cell_height() -> float:
 func _depth_visible_by_cutaway(depth: int) -> bool:
     return depth <= layer_cutaway_depth
 
-func _chunk_local_cell_visible_by_cutaway(local_cell: Vector3i) -> bool:
-    return local_cell.y <= 15 + layer_cutaway_depth
-
-func _cell_visible_by_cutaway(cell: Vector2i) -> bool:
-    return _depth_visible_by_cutaway(_depth_for_cell(cell))
-
 func _world_cell_visible_by_cutaway(world_cell: Vector3i) -> bool:
     return _depth_visible_by_cutaway(world_cell.y)
 
@@ -1162,10 +1086,7 @@ func _resource_visible_by_cutaway(resource: Dictionary) -> bool:
     var raw_world_cell: Array = resource.get("world_cell", [])
     if raw_world_cell.size() >= 3:
         return _world_cell_visible_by_cutaway(_array_to_vector3i(raw_world_cell))
-    var raw_position: Array = resource.get("position", [])
-    if raw_position.size() < 2:
-        return true
-    return _cell_visible_by_cutaway(Vector2i(int(raw_position[0]), int(raw_position[1])))
+    return true
 
 func _construction_visible_by_cutaway(construction: Dictionary) -> bool:
     var world_cells: Array[Vector3i] = _world_cells_from_snapshot(construction, "world_cells", "cells")
@@ -1183,7 +1104,7 @@ func _sync_hover_cell() -> void:
     _resolve_child_roots()
     if hover_root == null:
         return
-    if hover_cell == INVALID_CELL or not _cell_visible_by_cutaway(hover_cell):
+    if hover_cell == INVALID_CELL or not _world_cell_visible_by_cutaway(Vector3i(hover_cell.x, 0, hover_cell.y)):
         hover_root.visible = false
         return
     _ensure_hover_edges()
