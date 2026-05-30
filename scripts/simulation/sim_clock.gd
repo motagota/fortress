@@ -6,7 +6,7 @@ signal ticked(tick: int)
 var tick: int = 0
 var paused: bool = false
 var speed: int = 1
-var base_tick_interval_seconds: float = 0.5
+var base_tick_interval_seconds: float = 0.1  # 10 ticks/second
 var accumulated_seconds: float = 0.0
 
 func set_paused(value: bool) -> void:

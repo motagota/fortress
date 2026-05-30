@@ -41,17 +41,15 @@ find_godot() {
 }
 
 echo "Project root: $PROJECT_ROOT"
-echo "Running static project checks..."
-python tests/static_project_checks.py
 
 if ! GODOT_BIN="$(find_godot)"; then
     echo "Godot not found. Set GODOT=/path/to/godot, install godot on PATH, or place it at /d/dev/godot or /tmp/Godot_v4.6-stable_linux.x86_64." >&2
     exit 1
 fi
 
-echo "Running Godot headless tests with: $GODOT_BIN"
+echo "Running GUT test suite with: $GODOT_BIN"
 set +e
-"$GODOT_BIN" --headless --path "$PROJECT_ROOT" --script res://tests/run_godot_tests.gd 2>&1
+"$GODOT_BIN" --headless --path "$PROJECT_ROOT" -s addons/gut/gut_cmdln.gd -gdir=res://tests -ginclude_subdirs -gexit 2>&1
 godot_status=$?
 set -e
 

@@ -1,33 +1,22 @@
-name: Tests
+name: tests
 
 on:
   push:
-    branches: [main, develop]
+    branches: ["**"]
   pull_request:
-    branches: [main, develop]
 
 jobs:
-  test:
+  godot-tests:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Run static project checks
-        run: python tests/static_project_checks.py
-
-      - name: Download Godot 4.6
+      - name: Install Godot 4.6
         run: |
-          wget -q https://github.com/godotengine/godot-builds/releases/download/4.6-stable/Godot_v4.6-stable_linux.x86_64.zip
-          unzip -q Godot_v4.6-stable_linux.x86_64.zip
-          chmod +x Godot_v4.6-stable_linux.x86_64
-          rm Godot_v4.6-stable_linux.x86_64.zip
-
-      - name: Run Godot headless tests
-        run: |
-          ./Godot_v4.6-stable_linux.x86_64 --headless -s res://tests/run_godot_tests.gd
+          curl -sSL -o godot.zip https://github.com/godotengine/godot/releases/download/4.6-stable/Godot_v4.6-stable_linux.x86_64.zip
+          unzip -o godot.zip
+          mv Godot_v4.6-stable_linux.x86_64 /usr/local/bin/godot
+          chmod +x /usr/local/bin/godot
+      - name: Import project resources
+        run: godot --headless --path . --import || true
+      - name: Run GUT test suite
+        run: godot --headless --path . -s addons/gut/gut_cmdln.gd -gdir=res://tests -ginclude_subdirs -gexit

@@ -24,19 +24,9 @@ display/window/stretch/mode="viewport"
 display/window/stretch/aspect="expand"
 display/window/stretch/scale_mode="ignored"
 
-[global_scripts]
+[editor_plugins]
 
-DeterministicRng="*res://scripts/simulation/deterministic_rng.gd"
-GridWorld="*res://scripts/simulation/grid_world.gd"
-SimCell="*res://scripts/simulation/cell.gd"
-SimClock="*res://scripts/simulation/sim_clock.gd"
-SimItem="*res://scripts/simulation/item.gd"
-SimJob="*res://scripts/simulation/job.gd"
-SimUnit="*res://scripts/simulation/unit.gd"
-Simulation="*res://scripts/simulation/simulation.gd"
-JobBoard="*res://scripts/simulation/job_board.gd"
-Zone="*res://scripts/simulation/zone.gd"
-Stockpile="*res://scripts/simulation/stockpile.gd"
+enabled=PackedStringArray("res://addons/gut/plugin.cfg")
 
 [rendering]
 

@@ -8,7 +8,7 @@ var jobs: Dictionary = {}
 func add_job(job) -> void:
     jobs[job.id] = job
 
-func has_open_job_at(job_type: String, cell: Vector2i) -> bool:
+func has_open_job_at(job_type: String, cell: Vector3i) -> bool:
     for id in sorted_job_ids():
         var job = jobs[id]
         if job.type == job_type and job.target_cell == cell and job.status in ["open", "claimed", "in_progress"]:
@@ -39,8 +39,8 @@ func _is_better_job(a, b, unit) -> bool:
         return type_priority_a > type_priority_b
     if a.priority != b.priority:
         return a.priority > b.priority
-    var dist_a: int = unit.distance_to_world_cell(a.target_world_cell) if unit.has_method("distance_to_world_cell") else unit.distance_to_cell(a.target_cell)
-    var dist_b: int = unit.distance_to_world_cell(b.target_world_cell) if unit.has_method("distance_to_world_cell") else unit.distance_to_cell(b.target_cell)
+    var dist_a: int = unit.distance_to(a.target_cell)
+    var dist_b: int = unit.distance_to(b.target_cell)
     if dist_a != dist_b:
         return dist_a < dist_b
     return a.id < b.id
