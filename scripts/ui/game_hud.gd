@@ -12,6 +12,7 @@ signal tool_requested(tool_name: String)
 signal layer_change_requested(delta: int)
 signal stockpile_items_changed(stockpile_id: String, accepted_types: Array)
 signal wall_material_changed(material: String)
+signal recipe_queue_requested(building_id: String, recipe_id: String)
 signal worker_selected(unit_id: String)
 signal worker_rename_requested(unit_id: String, new_name: String)
 signal worker_allowed_job_toggled(unit_id: String, job_type: String, enabled: bool)
@@ -34,11 +35,18 @@ const TOOL_DEFINITIONS: Array = [
     {"id": "stair_down", "label": "7 Stairs Down"},
     {"id": "stockpile", "label": "8 Stockpile"},
     {"id": "kitchen", "label": "9 Kitchen"},
+    {"id": "kiln", "label": "K Kiln"},
+    {"id": "carpenter", "label": "B Carpenter"},
     {"id": "wall", "label": "0 Wall"},
 ]
 
-const STOCKPILE_ITEM_TYPES: Array = ["wood", "stone", "dirt", "food", "meal"]
-const WALL_MATERIALS: Array = ["dirt", "wood", "stone"]
+const STOCKPILE_ITEM_TYPES: Array = ["wood", "stone", "dirt", "food", "meal", "mud_brick", "wood_plank"]
+const WALL_MATERIALS: Array = ["mud_brick", "wood_plank"]
+const RECIPE_LABELS: Dictionary = {
+    "make_mud_brick": "Make Mud Brick",
+    "make_wood_plank": "Make Wood Plank",
+    "cook_meal": "Cook Meal",
+}
 
 @onready var tool_buttons_container: Container = $Toolbar/ToolButtons
 @onready var layer_label: Label = $Toolbar/StatusRow/LayerLabel
@@ -53,6 +61,10 @@ const WALL_MATERIALS: Array = ["dirt", "wood", "stone"]
 @onready var config_close_button: Button = $StockpileConfig/CloseButton
 @onready var wall_config_panel: Panel = $WallConfig
 @onready var wall_buttons_container: Container = $WallConfig/WallButtons
+@onready var workshop_config_panel: Panel = $WorkshopConfig
+@onready var workshop_title: Label = $WorkshopConfig/WorkshopTitle
+@onready var workshop_recipes_container: Container = $WorkshopConfig/RecipeButtons
+@onready var workshop_close_button: Button = $WorkshopConfig/CloseButton
 @onready var workers_panel: Panel = $WorkersPanel
 @onready var workers_list: Container = $WorkersPanel/WorkersScroll/WorkersList
 @onready var workers_close_button: Button = $WorkersPanel/WorkersClose
@@ -66,7 +78,8 @@ var _tool_button_lookup: Dictionary = {}
 var _config_checkboxes: Dictionary = {}
 var _wall_button_lookup: Dictionary = {}
 var _config_stockpile_id: String = ""
-var _wall_material: String = "stone"
+var _workshop_building_id: String = ""
+var _wall_material: String = "mud_brick"
 var _selected_unit_id: String = ""
 var _worker_row_buttons: Dictionary = {}
 var _detail_labels: Dictionary = {}
@@ -84,8 +97,9 @@ func _ready() -> void:
     _build_config_checkboxes()
     _build_wall_buttons()
     _connect_pressed(pause_button, _on_pause_button_pressed)
-    _connect_pressed(workers_button, toggle_workers_panel)
     _connect_pressed(config_close_button, hide_stockpile_config)
+    _connect_pressed(workshop_close_button, hide_workshop_orders)
+    _connect_pressed(workers_button, toggle_workers_panel)
     _connect_pressed(workers_close_button, hide_workers_panel)
     _connect_pressed(worker_detail_close_button, hide_worker_detail)
     _connect_pressed(worker_name_apply, _on_worker_name_apply)
@@ -108,6 +122,10 @@ func _resolve_nodes() -> void:
     config_close_button = get_node_or_null("StockpileConfig/CloseButton")
     wall_config_panel = get_node_or_null("WallConfig")
     wall_buttons_container = get_node_or_null("WallConfig/WallButtons")
+    workshop_config_panel = get_node_or_null("WorkshopConfig")
+    workshop_title = get_node_or_null("WorkshopConfig/WorkshopTitle")
+    workshop_recipes_container = get_node_or_null("WorkshopConfig/RecipeButtons")
+    workshop_close_button = get_node_or_null("WorkshopConfig/CloseButton")
     workers_panel = get_node_or_null("WorkersPanel")
     workers_list = get_node_or_null("WorkersPanel/WorkersScroll/WorkersList")
     workers_close_button = get_node_or_null("WorkersPanel/WorkersClose")
@@ -269,6 +287,33 @@ func _on_wall_material_pressed(material: String) -> void:
     _wall_material = material
     _refresh_wall_button_states()
     wall_material_changed.emit(material)
+
+# --- Workshop recipe queue ----------------------------------------------------
+
+func show_workshop_orders(summary: Dictionary) -> void:
+    _workshop_building_id = str(summary.get("building_id", ""))
+    if workshop_title != null:
+        workshop_title.text = "%s — Recipes" % str(summary.get("display_name", "Workshop"))
+    if workshop_recipes_container != null:
+        for child in workshop_recipes_container.get_children():
+            child.queue_free()
+        for recipe_id in summary.get("recipes", []):
+            var button := Button.new()
+            button.text = "Queue %s" % str(RECIPE_LABELS.get(recipe_id, str(recipe_id).capitalize()))
+            button.pressed.connect(_on_recipe_queue_pressed.bind(str(recipe_id)))
+            workshop_recipes_container.add_child(button)
+    if workshop_config_panel != null:
+        workshop_config_panel.visible = true
+
+func hide_workshop_orders() -> void:
+    _workshop_building_id = ""
+    if workshop_config_panel != null:
+        workshop_config_panel.visible = false
+
+func _on_recipe_queue_pressed(recipe_id: String) -> void:
+    if _workshop_building_id == "":
+        return
+    recipe_queue_requested.emit(_workshop_building_id, recipe_id)
 
 # --- Workers roster -----------------------------------------------------------
 

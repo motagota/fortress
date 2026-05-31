@@ -10,7 +10,7 @@ var inventory: Array[String] = []
 var allowed_jobs: Array[String] = [
     "CHOP_TREE", "GATHER_STONE", "GATHER_FOOD",
     "MINE_WALL", "CHANNEL_FLOOR", "BUILD_STAIR",
-    "HAUL_ITEM", "BUILD_CONSTRUCTION", "COOK_MEAL",
+    "HAUL_ITEM", "BUILD_CONSTRUCTION", "COOK_MEAL", "CRAFT_ITEM",
 ]
 var job_type_priorities: Dictionary = {}
 var skills: Dictionary = {"labor": 1, "mining": 1}

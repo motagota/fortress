@@ -255,6 +255,8 @@ func _item_color(item_type: String) -> Color:
         "food": return Color(0.85, 0.3, 0.3)
         "meal": return Color(0.95, 0.6, 0.2)
         "dirt": return Color(0.5, 0.34, 0.18)
+        "mud_brick": return Color(0.55, 0.40, 0.28)
+        "wood_plank": return Color(0.78, 0.62, 0.40)
         "coal": return Color(0.1, 0.1, 0.1)
         "iron_ore": return Color(0.64, 0.3, 0.22)
         "copper_ore": return Color(0.78, 0.42, 0.2)

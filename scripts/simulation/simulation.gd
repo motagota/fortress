@@ -21,6 +21,8 @@ const INITIAL_UNIT_COUNT := 6
 const HUNGER_EAT_THRESHOLD := 20
 const HUNGER_AFTER_EATING := 0
 const RECIPE_COOK_MEAL := "cook_meal"
+const RECIPE_MAKE_MUD_BRICK := "make_mud_brick"
+const RECIPE_MAKE_WOOD_PLANK := "make_wood_plank"
 const DEEP_MINING_COLLAPSE_DEPTH := 20      # mining at/below this y can collapse
 const DEEP_MINING_COLLAPSE_CHANCE := 25
 const WALL_CAVE_IN_INTERVAL := 50           # constructed walls roll for collapse this often
@@ -564,6 +566,8 @@ func _complete_job(unit, job) -> void:
             _complete_build_job(unit, job)
         "COOK_MEAL":
             _complete_workshop_job(unit, job)
+        "CRAFT_ITEM":
+            _complete_workshop_job(unit, job)
         "MINE_WALL":
             _complete_mine_job(unit, job)
         "CHANNEL_FLOOR":
@@ -1009,10 +1013,22 @@ func create_construction(building_type: String, target: Vector3i, priority: int 
         var c = world.peek_cell(cell)
         if not world.is_walkable(cell) or c.building_id != "" or c.resource_id != "" or c.has_plant():
             return {"ok": false, "warning": "Build area is blocked", "construction_id": ""}
+    if definition.has("requires_adjacent_liquid"):
+        var liquid: String = str(definition["requires_adjacent_liquid"])
+        if not _footprint_adjacent_to_liquid(footprint, liquid):
+            return {"ok": false, "warning": "Brick kiln must be next to water", "construction_id": ""}
     var id: String = allocate_id("construction")
     constructions[id] = ConstructionRecordScript.new(id, building_type, target, definition.get("required_items", {}), priority, "planned", "", footprint)
     _try_reserve_construction_resources(id)
     return {"ok": true, "warning": "", "construction_id": id}
+
+func _footprint_adjacent_to_liquid(footprint: Array[Vector3i], liquid: String) -> bool:
+    var offsets := [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1)]
+    for cell in footprint:
+        for offset in offsets:
+            if world.peek_cell(cell + offset).liquid_type == liquid:
+                return true
+    return false
 
 func cancel_construction(construction_id: String) -> bool:
     if not constructions.has(construction_id):
@@ -1268,6 +1284,12 @@ func _recipe_definition(recipe_id: String) -> Dictionary:
         RECIPE_COOK_MEAL:
             return {"id": RECIPE_COOK_MEAL, "display_name": "Cook Meal", "job_type": "COOK_MEAL",
                 "required_items": {"food": 2}, "produced_items": {"meal": 1}, "work_ticks": 4}
+        RECIPE_MAKE_MUD_BRICK:
+            return {"id": RECIPE_MAKE_MUD_BRICK, "display_name": "Make Mud Brick", "job_type": "CRAFT_ITEM",
+                "required_items": {"dirt": 2}, "produced_items": {"mud_brick": 1}, "work_ticks": 5}
+        RECIPE_MAKE_WOOD_PLANK:
+            return {"id": RECIPE_MAKE_WOOD_PLANK, "display_name": "Make Wood Plank", "job_type": "CRAFT_ITEM",
+                "required_items": {"wood": 1}, "produced_items": {"wood_plank": 2}, "work_ticks": 5}
     return {}
 
 # --- Job finalization ---------------------------------------------------------

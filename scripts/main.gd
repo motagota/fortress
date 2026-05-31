@@ -10,7 +10,7 @@ const C := preload("res://scripts/simulation/world_constants.gd")
 
 const INVALID_CELL := Vector3i(-2147483648, -2147483648, -2147483648)
 const SAVE_PATH := "user://saves/quicksave.json"
-const STOCKPILE_DEFAULT_ITEMS := ["wood", "stone", "dirt", "food", "meal"]
+const STOCKPILE_DEFAULT_ITEMS := ["wood", "stone", "dirt", "food", "meal", "mud_brick", "wood_plank"]
 
 const TOOL_INSPECT := "inspect"
 const TOOL_CHOP := "chop"
@@ -21,7 +21,15 @@ const TOOL_STAIR_UP := "stair_up"
 const TOOL_STAIR_DOWN := "stair_down"
 const TOOL_STOCKPILE := "stockpile"
 const TOOL_KITCHEN := "kitchen"
+const TOOL_KILN := "kiln"
+const TOOL_CARPENTER := "carpenter"
 const TOOL_WALL := "wall"
+
+const TOOL_BUILDINGS := {
+    TOOL_KITCHEN: "kitchen",
+    TOOL_KILN: "brick_kiln",
+    TOOL_CARPENTER: "carpenter",
+}
 
 const TOOL_COMMANDS := {
     TOOL_CHOP: "DESIGNATE_CHOP",
@@ -42,7 +50,7 @@ var active_tool: String = TOOL_INSPECT
 var active_layer: int = C.SURFACE_Y_MEAN
 var _drag_active: bool = false
 var _drag_start: Vector3i = INVALID_CELL
-var _wall_material: String = "stone"
+var _wall_material: String = "mud_brick"
 
 func _ready() -> void:
     simulation = SimulationScript.new()
@@ -57,6 +65,8 @@ func _ready() -> void:
         hud.stockpile_items_changed.connect(_on_stockpile_items_changed)
     if hud != null and hud.has_signal("wall_material_changed"):
         hud.wall_material_changed.connect(_on_wall_material_changed)
+    if hud != null and hud.has_signal("recipe_queue_requested"):
+        hud.recipe_queue_requested.connect(_on_recipe_queue_requested)
     if hud != null and hud.has_signal("worker_selected"):
         hud.worker_selected.connect(_on_worker_selected)
     if hud != null and hud.has_signal("worker_rename_requested"):
@@ -110,6 +120,8 @@ func _unhandled_input(event: InputEvent) -> void:
             KEY_8: set_active_tool(TOOL_STOCKPILE)
             KEY_9: set_active_tool(TOOL_KITCHEN)
             KEY_0: set_active_tool(TOOL_WALL)
+            KEY_K: set_active_tool(TOOL_KILN)
+            KEY_B: set_active_tool(TOOL_CARPENTER)
             KEY_E: _change_layer(1)
             KEY_C: _change_layer(-1)
             KEY_R: _toggle_workers_panel()
@@ -182,8 +194,8 @@ func _handle_click(cell: Vector3i) -> void:
         simulation.queue_command(next_tick, "player_001", str(TOOL_COMMANDS[active_tool]), cell, {"priority": 5})
         _hide_details()
         _hide_config()
-    elif active_tool == TOOL_KITCHEN:
-        simulation.queue_command(next_tick, "player_001", "PLACE_BLUEPRINT", cell, {"building_type": "kitchen", "priority": 5})
+    elif TOOL_BUILDINGS.has(active_tool):
+        simulation.queue_command(next_tick, "player_001", "PLACE_BLUEPRINT", cell, {"building_type": str(TOOL_BUILDINGS[active_tool]), "priority": 5})
         _hide_details()
         _hide_config()
     else:
@@ -231,6 +243,12 @@ func _inspect_or_configure(cell: Vector3i) -> void:
     if unit_id != "":
         _on_worker_selected(unit_id)
         return
+    var workshop: Dictionary = simulation.find_workshop_at_cell(cell)
+    if not workshop.is_empty() and hud != null and hud.has_method("show_workshop_orders"):
+        _hide_details()
+        _hide_config()
+        hud.show_workshop_orders(workshop)
+        return
     var stockpile_id: String = simulation.find_stockpile_at_cell(cell)
     if stockpile_id != "" and hud != null and hud.has_method("show_stockpile_config"):
         _hide_details()
@@ -249,6 +267,14 @@ func _on_stockpile_items_changed(stockpile_id: String, accepted_types: Array) ->
 func _hide_config() -> void:
     if hud != null and hud.has_method("hide_stockpile_config"):
         hud.hide_stockpile_config()
+    if hud != null and hud.has_method("hide_workshop_orders"):
+        hud.hide_workshop_orders()
+
+func _on_recipe_queue_requested(building_id: String, recipe_id: String) -> void:
+    if simulation == null:
+        return
+    simulation.queue_command(simulation.tick + 1, "player_001", "QUEUE_WORKSHOP_RECIPE", Vector3i.ZERO,
+        {"building_id": building_id, "recipe_id": recipe_id, "priority": 5})
 
 # --- Workers ------------------------------------------------------------------
 
