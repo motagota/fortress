@@ -20,7 +20,7 @@ func _step(sim, n: int) -> void:
 
 func test_new_game_spawns_units_on_walkable_surface():
 	var sim = _new_sim()
-	assert_eq(sim.units.size(), 3, "should spawn three units")
+	assert_eq(sim.units.size(), 6, "should spawn six units")
 	for id in sim.units.keys():
 		var unit = sim.units[id]
 		assert_true(sim.world.is_walkable(unit.position), "unit %s should stand on a walkable cell" % id)

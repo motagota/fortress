@@ -43,6 +43,10 @@ func _process(delta: float) -> void:
         _target += direction.normalized() * pan_speed * delta
         _apply_transform()
 
+func focus_on(world_x: float, world_z: float) -> void:
+    _target = Vector3(world_x, 0.0, world_z)
+    _apply_transform()
+
 func _apply_transform() -> void:
     global_position = Vector3(_target.x, height, _target.z)
     look_at(Vector3(_target.x, 0.0, _target.z), Vector3(0, 0, -1))

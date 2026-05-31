@@ -16,6 +16,8 @@ var _terrain: MeshInstance3D
 var _markers: MeshInstance3D
 var _units: MeshInstance3D
 var _overlay: MeshInstance3D
+var _stockpiles: MeshInstance3D
+var _preview: MeshInstance3D
 
 func _ready() -> void:
     _resolve_nodes()
@@ -24,14 +26,21 @@ func _resolve_nodes() -> void:
     _terrain = _ensure_mesh_node("Terrain")
     _markers = _ensure_mesh_node("Markers")
     _units = _ensure_mesh_node("Units")
+    _stockpiles = _ensure_mesh_node("StockpileTiles")
+    _preview = _ensure_mesh_node("StockpilePreview")
     _overlay = _ensure_mesh_node("Overlay")
 
 func _ensure_mesh_node(node_name: String) -> MeshInstance3D:
-    var node := get_node_or_null(node_name) as MeshInstance3D
-    if node == null:
-        node = MeshInstance3D.new()
-        node.name = node_name
-        add_child(node)
+    var existing := get_node_or_null(node_name)
+    if existing is MeshInstance3D:
+        return existing
+    # A node by this name exists but is the wrong type (e.g. a stale placeholder);
+    # drop it so we don't keep spawning fresh meshes alongside it every sync.
+    if existing != null:
+        existing.free()
+    var node := MeshInstance3D.new()
+    node.name = node_name
+    add_child(node)
     return node
 
 func set_active_layer(y: int) -> void:
@@ -50,9 +59,32 @@ func sync_from_simulation(simulation) -> void:
     if simulation == null or simulation.world == null:
         return
     _sync_terrain(simulation)
+    _sync_stockpiles(simulation)
     _sync_markers(simulation)
     _sync_units(simulation)
     _sync_overlay(simulation)
+
+# Live preview of a stockpile drag rectangle (cells may be Vector3i or [x,y,z]).
+func set_stockpile_preview(cells: Array) -> void:
+    _resolve_nodes()
+    var data: Dictionary = _new_mesh()
+    for raw in cells:
+        var cell: Vector3i
+        if raw is Vector3i:
+            cell = raw
+        elif raw is Array and raw.size() >= 3:
+            cell = Vector3i(int(raw[0]), int(raw[1]), int(raw[2]))
+        else:
+            continue
+        if cell.y != active_layer:
+            continue
+        _append_box(data, Vector3(float(cell.x), 0.1, float(cell.z)), Vector3(0.96, 0.04, 0.96), Color(0.35, 0.85, 1.0, 0.4))
+    _apply_mesh(_preview, data, true)
+
+func clear_stockpile_preview() -> void:
+    _resolve_nodes()
+    if _preview != null:
+        _preview.mesh = null
 
 # Map a mouse ray onto the active-layer ground plane (render y = 0).
 func ray_to_cell(ray_origin: Vector3, ray_direction: Vector3) -> Vector3i:
@@ -80,6 +112,10 @@ func _sync_terrain(simulation) -> void:
             var cell = world.peek_cell(addr)
             var center := Vector3(float(x), 0.0, float(z))
             if cell.has_wall():
+                # Solid rock stays hidden until a neighbouring cell is opened up
+                # (mined/channelled/exposed), so only revealed faces are drawn.
+                if not _wall_is_exposed(world, addr):
+                    continue
                 _append_box(data, center + Vector3(0, 0.4, 0), Vector3(0.98, 0.8, 0.98), _material_color(cell.wall_material))
             elif cell.has_liquid():
                 _append_box(data, center + Vector3(0, 0.04, 0), Vector3(0.98, 0.08, 0.98), _liquid_color(cell.liquid_type))
@@ -104,6 +140,29 @@ func _floor_color(cell) -> Color:
         return Color(0.28, 0.55, 0.24)
     return _material_color(cell.floor_material)
 
+# A wall cell is only revealed when at least one of its six neighbours is open
+# (no wall) — i.e. it borders dug-out/exposed space. Fully enclosed rock is hidden.
+func _wall_is_exposed(world, cell: Vector3i) -> bool:
+    for offset in [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1), Vector3i(0, 1, 0), Vector3i(0, -1, 0)]:
+        var neighbor: Vector3i = cell + offset
+        if not world.in_bounds(neighbor):
+            continue
+        if not world.peek_cell(neighbor).has_wall():
+            return true
+    return false
+
+# --- Stockpiles ---------------------------------------------------------------
+
+func _sync_stockpiles(simulation) -> void:
+    var data: Dictionary = _new_mesh()
+    for stockpile_id in simulation.stockpiles.keys():
+        var stockpile = simulation.stockpiles[stockpile_id]
+        for cell in stockpile.cells:
+            if cell.y != active_layer:
+                continue
+            _append_box(data, Vector3(float(cell.x), 0.08, float(cell.z)), Vector3(0.96, 0.04, 0.96), Color(0.2, 0.62, 0.9, 0.45))
+    _apply_mesh(_stockpiles, data, true)
+
 # --- Markers (plants, buildings, items) ---------------------------------------
 
 func _sync_markers(simulation) -> void:
@@ -117,11 +176,15 @@ func _sync_markers(simulation) -> void:
                 _append_box(data, center + Vector3(0, 0.55, 0), Vector3(0.5, 0.7, 0.5), _plant_color(cell.plant))
             if cell.building_id != "":
                 _append_box(data, center + Vector3(0, 0.3, 0), Vector3(0.7, 0.5, 0.7), Color(0.62, 0.45, 0.22))
+            if cell.has_stair():
+                _append_box(data, center + Vector3(-0.28, 0.12, 0.0), Vector3(0.22, 0.16, 0.72), Color(0.78, 0.78, 0.86))
+                _append_box(data, center + Vector3(0.0, 0.26, 0.0), Vector3(0.22, 0.30, 0.72), Color(0.85, 0.85, 0.92))
+                _append_box(data, center + Vector3(0.28, 0.40, 0.0), Vector3(0.22, 0.48, 0.72), Color(0.92, 0.92, 0.99))
     for item_id in simulation.items.keys():
         var item = simulation.items[item_id]
         if item.holder_unit_id != "" or item.position.y != active_layer:
             continue
-        _append_box(data, Vector3(float(item.position.x), 0.25, float(item.position.z)), Vector3(0.32, 0.32, 0.32), _item_color(item.item_type))
+        _append_box(data, Vector3(float(item.position.x), 0.42, float(item.position.z)), Vector3(0.55, 0.5, 0.55), _item_color(item.item_type))
     _apply_mesh(_markers, data, false)
 
 # --- Units --------------------------------------------------------------------
@@ -148,7 +211,7 @@ func _sync_overlay(simulation) -> void:
             continue
         _append_box(data, Vector3(float(job.target_cell.x), 0.9, float(job.target_cell.z)), Vector3(0.9, 0.05, 0.9), color)
     if hover_cell != INVALID_CELL and hover_cell.y == active_layer:
-        _append_box(data, Vector3(float(hover_cell.x), 0.95, float(hover_cell.z)), Vector3(1.0, 0.04, 1.0), Color(1.0, 1.0, 1.0, 0.35))
+        _append_box(data, Vector3(float(hover_cell.x), 0.98, float(hover_cell.z)), Vector3(1.0, 0.06, 1.0), Color(1.0, 0.95, 0.35, 0.55))
     _apply_mesh(_overlay, data, true)
 
 # --- Colors -------------------------------------------------------------------
@@ -164,6 +227,7 @@ func _material_color(material_key: String) -> Color:
         C.MATERIAL_SOFT_ROCK: return Color(0.44, 0.44, 0.50)
         C.MATERIAL_HARD_ROCK: return Color(0.26, 0.26, 0.30)
         C.MATERIAL_BEDROCK: return Color(0.10, 0.10, 0.12)
+        C.MATERIAL_WOOD: return Color(0.55, 0.36, 0.16)
         C.MATERIAL_ORE_COAL: return Color(0.12, 0.12, 0.13)
         C.MATERIAL_ORE_COPPER: return Color(0.78, 0.42, 0.20)
         C.MATERIAL_ORE_IRON: return Color(0.64, 0.30, 0.22)
