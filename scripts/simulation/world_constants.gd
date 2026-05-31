@@ -27,6 +27,7 @@ const MATERIAL_LOOSE_STONE := "LOOSE_STONE"
 const MATERIAL_SOFT_ROCK := "SOFT_ROCK"
 const MATERIAL_HARD_ROCK := "HARD_ROCK"
 const MATERIAL_BEDROCK := "BEDROCK"
+const MATERIAL_WOOD := "WOOD"
 const MATERIAL_ORE_COAL := "ORE_COAL"
 const MATERIAL_ORE_COPPER := "ORE_COPPER"
 const MATERIAL_ORE_IRON := "ORE_IRON"
@@ -105,7 +106,7 @@ static func is_plant_material(material_key: String) -> bool:
 static func required_mining_tier_for_material(material_key: String) -> int:
     match material_key:
         MATERIAL_GRASS, MATERIAL_DIRT, MATERIAL_CLAY, MATERIAL_SAND, MATERIAL_GRAVEL, \
-        MATERIAL_LOOSE_STONE, MATERIAL_SOFT_ROCK:
+        MATERIAL_LOOSE_STONE, MATERIAL_SOFT_ROCK, MATERIAL_WOOD:
             return MINING_TIER_BASIC
         MATERIAL_HARD_ROCK, MATERIAL_ORE_COAL, MATERIAL_ORE_COPPER, MATERIAL_ORE_IRON:
             return MINING_TIER_HARD_ROCK
@@ -126,6 +127,8 @@ static func mined_item_type_for_material(material_key: String) -> String:
     match material_key:
         MATERIAL_GRASS, MATERIAL_DIRT:
             return "dirt"
+        MATERIAL_WOOD:
+            return "wood"
         MATERIAL_CLAY:
             return "clay"
         MATERIAL_SAND:

@@ -1,455 +1,273 @@
 extends CanvasLayer
 
-signal tool_mode_requested(mode: String)
-signal stockpile_mode_requested(storage_mode: String)
-signal workshop_recipe_requested(recipe_id: String)
-signal layer_depth_requested(delta: int)
+# Heads-up display: top toolbar for tool selection, a layer/tick readout, time
+# controls, a tile inspector panel, a stockpile config window, and a wall-material
+# picker. Reads simulation state on sync; never mutates it. The toolbar and panels
+# occupy small rects so the rest of the screen passes mouse events to the world.
 
-const WorldgenDiagnosticsScript := preload("res://scripts/simulation/worldgen_diagnostics.gd")
+const C := preload("res://scripts/simulation/world_constants.gd")
+const SimulationScript := preload("res://scripts/simulation/simulation.gd")
 
-const TOOL_MODE_INSPECT := "inspect"
-const TOOL_MODE_GATHER_WOOD := "gather_wood"
-const TOOL_MODE_GATHER_STONE := "gather_stone"
-const TOOL_MODE_GATHER_FOOD := "gather_food"
-const TOOL_MODE_MINE := "mine"
-const TOOL_MODE_DESIGNATE_STOCKPILE := "designate_stockpile"
-const TOOL_MODE_PLACE_KITCHEN := "place_kitchen"
-const TOOL_MODE_LABELS := {
-    TOOL_MODE_INSPECT: "Inspect",
-    TOOL_MODE_GATHER_WOOD: "Chop Wood",
-    TOOL_MODE_GATHER_STONE: "Gather Stone",
-    TOOL_MODE_GATHER_FOOD: "Gather Food",
-    TOOL_MODE_MINE: "Mine",
-    TOOL_MODE_DESIGNATE_STOCKPILE: "Stockpile",
-    TOOL_MODE_PLACE_KITCHEN: "Kitchen",
+signal tool_requested(tool_name: String)
+signal layer_change_requested(delta: int)
+signal stockpile_items_changed(stockpile_id: String, accepted_types: Array)
+signal wall_material_changed(material: String)
+signal recipe_queue_requested(building_id: String, recipe_id: String)
+
+const TOOL_DEFINITIONS: Array = [
+    {"id": "inspect", "label": "1 Inspect"},
+    {"id": "chop", "label": "2 Chop"},
+    {"id": "gather", "label": "3 Gather"},
+    {"id": "mine", "label": "4 Mine"},
+    {"id": "channel", "label": "5 Channel"},
+    {"id": "stair_up", "label": "6 Stairs Up"},
+    {"id": "stair_down", "label": "7 Stairs Down"},
+    {"id": "stockpile", "label": "8 Stockpile"},
+    {"id": "kitchen", "label": "9 Kitchen"},
+    {"id": "kiln", "label": "K Kiln"},
+    {"id": "carpenter", "label": "B Carpenter"},
+    {"id": "wall", "label": "0 Wall"},
+]
+
+const STOCKPILE_ITEM_TYPES: Array = ["wood", "stone", "dirt", "food", "meal", "mud_brick", "wood_plank"]
+const WALL_MATERIALS: Array = ["mud_brick", "wood_plank"]
+const RECIPE_LABELS: Dictionary = {
+    "make_mud_brick": "Make Mud Brick",
+    "make_wood_plank": "Make Wood Plank",
+    "cook_meal": "Cook Meal",
 }
 
-@onready var label: Label = $Panel/SimInfo/StatusLabel
-@onready var pause_button: Button = $Panel/PauseButton
-@onready var speed_1x: Button = $Panel/Speed1x
-@onready var speed_2x: Button = $Panel/Speed2x
-@onready var speed_4x: Button = $Panel/Speed4x
-@onready var inspect_button: Button = $Panel/InspectButton
-@onready var gather_wood_button: Button = $Panel/GatherWoodButton
-@onready var gather_stone_button: Button = $Panel/GatherStoneButton
-@onready var gather_food_button: Button = $Panel/GatherFoodButton
-@onready var mine_button: Button = $Panel/MineButton
-@onready var stockpile_button: Button = $Panel/StockpileButton
-@onready var kitchen_button: Button = $Panel/KitchenButton
-@onready var storage_only_button: Button = $Panel/StockpileConfig/StorageOnlyButton
-@onready var supply_only_button: Button = $Panel/StockpileConfig/SupplyOnlyButton
-@onready var both_mode_button: Button = $Panel/StockpileConfig/BothModeButton
-@onready var cook_meal_button: Button = $Panel/CookMealButton
-@onready var layer_up_button: Button = $Panel/LayerUpButton
-@onready var layer_down_button: Button = $Panel/LayerDownButton
-@onready var layer_label: Label = $Panel/LayerLabel
-@onready var worldgen_diagnostics_button: Button = $Panel/WorldgenDiagnosticsButton
-@onready var jobs_panel: Panel = $JobsPanel
-@onready var jobs_list_label: Label = $JobsPanel/JobsListLabel
-@onready var workers_panel: Panel = $WorkersPanel
-@onready var workers_list: ItemList = $WorkersPanel/WorkersList
-@onready var worker_detail_label: Label = $WorkersPanel/WorkerDetailLabel
-@onready var worldgen_diagnostics_panel: Panel = $WorldgenDiagnosticsPanel
-@onready var worldgen_diagnostics_label: Label = $WorldgenDiagnosticsPanel/WorldgenDiagnosticsLabel
+@onready var tool_buttons_container: Container = $Toolbar/ToolButtons
+@onready var layer_label: Label = $Toolbar/StatusRow/LayerLabel
+@onready var tick_label: Label = $Toolbar/StatusRow/TickLabel
+@onready var pause_button: Button = $Toolbar/StatusRow/PauseButton
+@onready var inspector_panel: Panel = $Inspector
+@onready var inspector_label: Label = $Inspector/InspectorLabel
+@onready var config_panel: Panel = $StockpileConfig
+@onready var config_title: Label = $StockpileConfig/ConfigTitle
+@onready var config_item_container: Container = $StockpileConfig/ItemList
+@onready var config_close_button: Button = $StockpileConfig/CloseButton
+@onready var wall_config_panel: Panel = $WallConfig
+@onready var wall_buttons_container: Container = $WallConfig/WallButtons
+@onready var workshop_config_panel: Panel = $WorkshopConfig
+@onready var workshop_title: Label = $WorkshopConfig/WorkshopTitle
+@onready var workshop_recipes_container: Container = $WorkshopConfig/RecipeButtons
+@onready var workshop_close_button: Button = $WorkshopConfig/CloseButton
 
-var sim_clock: SimClock
-var active_tool_mode: String = TOOL_MODE_INSPECT
-var last_warning: String = ""
-var selected_stockpile_id: String = ""
-var selected_stockpile_mode: String = ""
-var selected_workshop_id: String = ""
-var selected_workshop_name: String = ""
-var selected_worker_id: String = ""
-var layer_depth: int = 0
-var jobs_panel_visible: bool = false
-var workers_panel_visible: bool = false
-var worldgen_diagnostics_panel_visible: bool = false
-var _last_worker_snapshot: Array = []
-var _last_synced_simulation: Simulation = null
-var _signals_connected: bool = false
+var _tool_button_lookup: Dictionary = {}
+var _config_checkboxes: Dictionary = {}
+var _wall_button_lookup: Dictionary = {}
+var _config_stockpile_id: String = ""
+var _workshop_building_id: String = ""
+var _wall_material: String = "mud_brick"
+var active_tool: String = "inspect"
+var active_layer: int = C.SURFACE_Y_MEAN
+var _sim_clock = null
+var _last_synced_simulation = null
 
 func _ready() -> void:
-    _refresh_jobs_panel_visibility()
-    _refresh_workers_panel_visibility()
-    _refresh_worldgen_diagnostics_panel_visibility()
-    _refresh_workshop_buttons()
-    _refresh_layer_controls()
-    if _signals_connected:
-        _refresh_status_text(null)
+    _resolve_nodes()
+    _build_tool_buttons()
+    _build_config_checkboxes()
+    _build_wall_buttons()
+    _connect_pressed(pause_button, _on_pause_button_pressed)
+    _connect_pressed(config_close_button, hide_stockpile_config)
+    _connect_pressed(workshop_close_button, hide_workshop_orders)
+    _refresh_tool_button_states()
+    _refresh_wall_button_states()
+    _refresh_layer_label()
+    _refresh_time_controls()
+
+func _resolve_nodes() -> void:
+    tool_buttons_container = get_node_or_null("Toolbar/ToolButtons")
+    layer_label = get_node_or_null("Toolbar/StatusRow/LayerLabel")
+    tick_label = get_node_or_null("Toolbar/StatusRow/TickLabel")
+    pause_button = get_node_or_null("Toolbar/StatusRow/PauseButton")
+    inspector_panel = get_node_or_null("Inspector")
+    inspector_label = get_node_or_null("Inspector/InspectorLabel")
+    config_panel = get_node_or_null("StockpileConfig")
+    config_title = get_node_or_null("StockpileConfig/ConfigTitle")
+    config_item_container = get_node_or_null("StockpileConfig/ItemList")
+    config_close_button = get_node_or_null("StockpileConfig/CloseButton")
+    wall_config_panel = get_node_or_null("WallConfig")
+    wall_buttons_container = get_node_or_null("WallConfig/WallButtons")
+    workshop_config_panel = get_node_or_null("WorkshopConfig")
+    workshop_title = get_node_or_null("WorkshopConfig/WorkshopTitle")
+    workshop_recipes_container = get_node_or_null("WorkshopConfig/RecipeButtons")
+    workshop_close_button = get_node_or_null("WorkshopConfig/CloseButton")
+
+func _build_tool_buttons() -> void:
+    if tool_buttons_container == null:
         return
-    if pause_button:
-        _connect_pressed(pause_button, _on_pause_pressed)
-    if speed_1x:
-        _connect_pressed(speed_1x, _on_speed_pressed.bind(1))
-    if speed_2x:
-        _connect_pressed(speed_2x, _on_speed_pressed.bind(2))
-    if speed_4x:
-        _connect_pressed(speed_4x, _on_speed_pressed.bind(4))
-    if inspect_button:
-        _connect_pressed(inspect_button, _on_tool_button_pressed.bind(TOOL_MODE_INSPECT))
-    if gather_wood_button:
-        _connect_pressed(gather_wood_button, _on_tool_button_pressed.bind(TOOL_MODE_GATHER_WOOD))
-    if gather_stone_button:
-        _connect_pressed(gather_stone_button, _on_tool_button_pressed.bind(TOOL_MODE_GATHER_STONE))
-    if gather_food_button:
-        _connect_pressed(gather_food_button, _on_tool_button_pressed.bind(TOOL_MODE_GATHER_FOOD))
-    if mine_button:
-        _connect_pressed(mine_button, _on_tool_button_pressed.bind(TOOL_MODE_MINE))
-    if stockpile_button:
-        _connect_pressed(stockpile_button, _on_tool_button_pressed.bind(TOOL_MODE_DESIGNATE_STOCKPILE))
-    if kitchen_button:
-        _connect_pressed(kitchen_button, _on_tool_button_pressed.bind(TOOL_MODE_PLACE_KITCHEN))
-    if storage_only_button:
-        _connect_pressed(storage_only_button, _on_stockpile_mode_pressed.bind("storage"))
-    if supply_only_button:
-        _connect_pressed(supply_only_button, _on_stockpile_mode_pressed.bind("supply"))
-    if both_mode_button:
-        _connect_pressed(both_mode_button, _on_stockpile_mode_pressed.bind("both"))
-    if cook_meal_button:
-        _connect_pressed(cook_meal_button, _on_cook_meal_pressed)
-    if layer_up_button:
-        _connect_pressed(layer_up_button, _on_layer_up_pressed)
-    if layer_down_button:
-        _connect_pressed(layer_down_button, _on_layer_down_pressed)
-    if worldgen_diagnostics_button:
-        _connect_pressed(worldgen_diagnostics_button, _on_worldgen_diagnostics_pressed)
-    if workers_list and not workers_list.item_selected.is_connected(_on_worker_selected):
-        workers_list.item_selected.connect(_on_worker_selected)
-    _signals_connected = true
-    _refresh_status_text(null)
+    for child in tool_buttons_container.get_children():
+        child.queue_free()
+    _tool_button_lookup.clear()
+    for definition in TOOL_DEFINITIONS:
+        var button := Button.new()
+        button.text = str(definition["label"])
+        button.toggle_mode = true
+        button.pressed.connect(_on_tool_button_pressed.bind(str(definition["id"])))
+        tool_buttons_container.add_child(button)
+        _tool_button_lookup[str(definition["id"])] = button
+
+func _build_config_checkboxes() -> void:
+    if config_item_container == null:
+        return
+    for child in config_item_container.get_children():
+        child.queue_free()
+    _config_checkboxes.clear()
+    for item_type in STOCKPILE_ITEM_TYPES:
+        var checkbox := CheckBox.new()
+        checkbox.text = str(item_type).capitalize()
+        checkbox.toggled.connect(_on_config_item_toggled.bind(str(item_type)))
+        config_item_container.add_child(checkbox)
+        _config_checkboxes[str(item_type)] = checkbox
+
+func _build_wall_buttons() -> void:
+    if wall_buttons_container == null:
+        return
+    for child in wall_buttons_container.get_children():
+        child.queue_free()
+    _wall_button_lookup.clear()
+    for material in WALL_MATERIALS:
+        var button := Button.new()
+        button.text = str(material).capitalize()
+        button.toggle_mode = true
+        button.pressed.connect(_on_wall_material_pressed.bind(str(material)))
+        wall_buttons_container.add_child(button)
+        _wall_button_lookup[str(material)] = button
 
 func _connect_pressed(button: Button, callable: Callable) -> void:
-    if not button.pressed.is_connected(callable):
+    if button != null and not button.pressed.is_connected(callable):
         button.pressed.connect(callable)
 
-func set_sim_clock(clock: SimClock) -> void:
-    sim_clock = clock
+func _refresh_tool_button_states() -> void:
+    for tool_id in _tool_button_lookup.keys():
+        var button: Button = _tool_button_lookup[tool_id]
+        button.button_pressed = tool_id == active_tool
 
-func _on_pause_pressed() -> void:
-    if sim_clock == null:
-        return
-    sim_clock.set_paused(not sim_clock.paused)
-    if sim_clock.paused:
-        pause_button.text = "Play"
-    else:
-        pause_button.text = "Pause"
+func _refresh_wall_button_states() -> void:
+    for material in _wall_button_lookup.keys():
+        var button: Button = _wall_button_lookup[material]
+        button.button_pressed = material == _wall_material
 
-func _on_speed_pressed(speed: int) -> void:
-    if sim_clock == null:
-        return
-    sim_clock.set_speed(speed)
+func set_active_tool(tool_name: String) -> void:
+    active_tool = tool_name
+    _refresh_tool_button_states()
 
-func _on_tool_button_pressed(mode: String) -> void:
-    if set_active_tool_mode(mode):
-        tool_mode_requested.emit(mode)
+func _on_tool_button_pressed(tool_id: String) -> void:
+    active_tool = tool_id
+    _refresh_tool_button_states()
+    tool_requested.emit(tool_id)
 
-func _on_stockpile_mode_pressed(storage_mode: String) -> void:
-    if selected_stockpile_id == "":
-        show_warning("Select a stockpile first")
-        return
-    stockpile_mode_requested.emit(storage_mode)
+func set_active_layer(layer: int) -> void:
+    active_layer = layer
+    _refresh_layer_label()
 
-func _on_cook_meal_pressed() -> void:
-    if selected_workshop_id == "":
-        show_warning("Select a kitchen first")
-        return
-    workshop_recipe_requested.emit("cook_meal")
-
-func _on_layer_up_pressed() -> void:
-    layer_depth_requested.emit(1)
-
-func _on_layer_down_pressed() -> void:
-    layer_depth_requested.emit(-1)
-
-func _on_worldgen_diagnostics_pressed() -> void:
-    toggle_worldgen_diagnostics_panel()
-
-func set_active_tool_mode(mode: String) -> bool:
-    if not TOOL_MODE_LABELS.has(mode):
-        return false
-    active_tool_mode = mode
-    last_warning = ""
-    _refresh_status_text(null)
-    return true
-
-func show_warning(warning: String) -> void:
-    last_warning = warning
-    _refresh_status_text(null)
-
-func toggle_jobs_panel() -> void:
-    set_jobs_panel_visible(not jobs_panel_visible)
-
-func set_jobs_panel_visible(panel_visible: bool) -> void:
-    jobs_panel_visible = panel_visible
-    _refresh_jobs_panel_visibility()
-
-func toggle_workers_panel() -> void:
-    set_workers_panel_visible(not workers_panel_visible)
-
-func set_workers_panel_visible(panel_visible: bool) -> void:
-    workers_panel_visible = panel_visible
-    _refresh_workers_panel_visibility()
-
-func toggle_worldgen_diagnostics_panel() -> void:
-    set_worldgen_diagnostics_panel_visible(not worldgen_diagnostics_panel_visible)
-
-func set_worldgen_diagnostics_panel_visible(panel_visible: bool) -> void:
-    worldgen_diagnostics_panel_visible = panel_visible
-    _refresh_worldgen_diagnostics_panel_visibility()
-    if worldgen_diagnostics_panel_visible:
-        _refresh_worldgen_diagnostics(_last_synced_simulation)
-
-func set_selected_stockpile(stockpile_id: String, storage_mode: String = "") -> void:
-    selected_stockpile_id = stockpile_id
-    selected_stockpile_mode = storage_mode
-    _refresh_stockpile_mode_buttons()
-    _refresh_status_text(null)
-
-func set_selected_workshop(workshop_id: String, display_name: String = "") -> void:
-    selected_workshop_id = workshop_id
-    selected_workshop_name = display_name
-    _refresh_workshop_buttons()
-    _refresh_status_text(null)
-
-func set_layer_depth(depth: int) -> void:
-    layer_depth = clampi(depth, -15, 0)
-    _refresh_layer_controls()
-    _refresh_status_text(null)
-
-func sync_from_simulation(simulation: Simulation) -> void:
-    _last_synced_simulation = simulation
-    if selected_stockpile_id != "":
-        var found: bool = false
-        for stockpile in simulation.canonical_snapshot()["stockpiles"]:
-            if str(stockpile.get("id", "")) == selected_stockpile_id:
-                selected_stockpile_mode = str(stockpile.get("storage_mode", "both"))
-                found = true
-                break
-        if not found:
-            selected_stockpile_id = ""
-            selected_stockpile_mode = ""
-    _refresh_stockpile_mode_buttons()
-    _refresh_workshop_buttons()
-    _refresh_jobs_list(simulation)
-    _refresh_workers_list(simulation)
-    _refresh_worldgen_diagnostics(simulation)
-    _refresh_status_text(simulation)
-
-func _refresh_jobs_panel_visibility() -> void:
-    if jobs_panel == null:
-        return
-    jobs_panel.visible = jobs_panel_visible
-
-func _refresh_workers_panel_visibility() -> void:
-    if workers_panel == null:
-        return
-    workers_panel.visible = workers_panel_visible
-
-func _refresh_worldgen_diagnostics_panel_visibility() -> void:
-    if worldgen_diagnostics_panel == null:
-        return
-    worldgen_diagnostics_panel.visible = worldgen_diagnostics_panel_visible
-
-func _refresh_jobs_list(simulation: Simulation) -> void:
-    if jobs_list_label == null or simulation == null:
-        return
-    var snapshot: Dictionary = simulation.canonical_snapshot()
-    var jobs: Array = snapshot.get("jobs", [])
-    if jobs.is_empty():
-        jobs_list_label.text = "No jobs"
-        return
-    var lines: Array[String] = []
-    for job in jobs:
-        var target: Array = job.get("target_world_cell", job.get("target_cell", [0, 0, 0]))
-        var claimed_by: String = str(job.get("claimed_by_unit_id", ""))
-        var claimed_text: String = "unclaimed" if claimed_by == "" else claimed_by
-        lines.append("%s | %s | %s | (%d,%d,%d) | %s" % [
-            str(job.get("id", "")),
-            str(job.get("type", "")),
-            str(job.get("status", "")),
-            int(target[0]),
-            int(target[1]),
-            int(target[2]) if target.size() >= 3 else 0,
-            claimed_text,
-        ])
-    jobs_list_label.text = "\n".join(lines)
-
-func _refresh_workers_list(simulation: Simulation) -> void:
-    if workers_list == null or simulation == null:
-        return
-    var snapshot: Dictionary = simulation.canonical_snapshot()
-    var workers: Array = snapshot.get("units", [])
-    _last_worker_snapshot = workers
-    workers_list.clear()
-    if workers.is_empty():
-        selected_worker_id = ""
-        _refresh_worker_detail(workers)
-        return
-    var selected_index: int = -1
-    for worker in workers:
-        var position: Array = worker.get("world_cell", worker.get("position", [0, 0, 0]))
-        var current_job_id: String = str(worker.get("current_job_id", ""))
-        var job_text: String = "no job" if current_job_id == "" else current_job_id
-        var needs: Dictionary = worker.get("needs", {})
-        workers_list.add_item("%s | %s | (%d,%d,%d) | %s | H%d E%d" % [
-            str(worker.get("display_name", "")),
-            str(worker.get("state", "")),
-            int(position[0]),
-            int(position[1]),
-            int(position[2]) if position.size() >= 3 else 0,
-            job_text,
-            int(needs.get("hunger", 0)),
-            int(needs.get("energy", 0)),
-        ])
-        var item_index: int = workers_list.get_item_count() - 1
-        var worker_id: String = str(worker.get("id", ""))
-        workers_list.set_item_metadata(item_index, worker_id)
-        if worker_id == selected_worker_id:
-            selected_index = item_index
-    if selected_index >= 0:
-        workers_list.select(selected_index)
-    else:
-        workers_list.deselect_all()
-        if selected_worker_id != "":
-            selected_worker_id = ""
-    _refresh_worker_detail(workers)
-
-func _on_worker_selected(index: int) -> void:
-    if workers_list == null or index < 0 or index >= workers_list.get_item_count():
-        return
-    selected_worker_id = str(workers_list.get_item_metadata(index))
-    _refresh_worker_detail(_last_worker_snapshot)
-
-func _refresh_worker_detail(workers: Array) -> void:
-    if worker_detail_label == null:
-        return
-    if selected_worker_id == "":
-        worker_detail_label.text = "Select a worker"
-        return
-    var worker: Dictionary = _find_worker_snapshot(workers, selected_worker_id)
-    if worker.is_empty():
-        worker_detail_label.text = "Select a worker"
-        return
-    var position: Array = worker.get("position", [0, 0])
-    var current_job_id: String = str(worker.get("current_job_id", ""))
-    var job_text: String = "None" if current_job_id == "" else current_job_id
-    var needs: Dictionary = worker.get("needs", {})
-    var inventory: Array = worker.get("inventory", [])
-    var allowed_jobs: Array = worker.get("allowed_jobs", [])
-    var job_priorities: Dictionary = worker.get("job_type_priorities", {})
-    var skills: Dictionary = worker.get("skills", {})
-    worker_detail_label.text = "%s (%s)\nState: %s\nPosition: (%d,%d)\nCurrent job: %s\nNeeds: Hunger %d | Energy %d | Morale %d\nInventory: %s\nAllowed jobs: %s\nPriorities: %s\nLabor: %d | Mining: %d" % [
-        str(worker.get("display_name", "")),
-        str(worker.get("id", "")),
-        str(worker.get("state", "")),
-        int(position[0]),
-        int(position[1]),
-        job_text,
-        int(needs.get("hunger", 0)),
-        int(needs.get("energy", 0)),
-        int(needs.get("morale", 0)),
-        _format_array(inventory),
-        _format_array(allowed_jobs),
-        _format_dictionary(job_priorities),
-        int(skills.get("labor", 0)),
-        int(skills.get("mining", 0)),
-    ]
-
-func _refresh_worldgen_diagnostics(simulation: Simulation) -> void:
-    if worldgen_diagnostics_label == null or not worldgen_diagnostics_panel_visible:
-        return
-    if simulation == null or not simulation.has_method("get_worldgen_storage_diagnostics"):
-        worldgen_diagnostics_label.text = "Worldgen diagnostics unavailable"
-        return
-    var report: Dictionary = simulation.get_worldgen_storage_diagnostics()
-    var lines: Array[String] = []
-    lines = WorldgenDiagnosticsScript.format_report(report)
-    worldgen_diagnostics_label.text = "\n".join(lines)
-
-func _find_worker_snapshot(workers: Array, worker_id: String) -> Dictionary:
-    for worker in workers:
-        if str(worker.get("id", "")) == worker_id:
-            return worker
-    return {}
-
-func _format_array(values: Array) -> String:
-    if values.is_empty():
-        return "None"
-    var parts: Array[String] = []
-    for value in values:
-        parts.append(str(value))
-    return ", ".join(parts)
-
-func _format_dictionary(values: Dictionary) -> String:
-    if values.is_empty():
-        return "None"
-    var keys: Array = values.keys()
-    keys.sort()
-    var parts: Array[String] = []
-    for key in keys:
-        parts.append("%s=%s" % [str(key), str(values[key])])
-    return ", ".join(parts)
-
-func _refresh_stockpile_mode_buttons() -> void:
-    var has_selection: bool = selected_stockpile_id != ""
-    _set_mode_button_state(storage_only_button, has_selection, selected_stockpile_mode == "storage")
-    _set_mode_button_state(supply_only_button, has_selection, selected_stockpile_mode == "supply")
-    _set_mode_button_state(both_mode_button, has_selection, selected_stockpile_mode == "both")
-
-func _refresh_workshop_buttons() -> void:
-    if cook_meal_button == null:
-        return
-    cook_meal_button.disabled = selected_workshop_id == ""
-
-func _refresh_layer_controls() -> void:
+func _refresh_layer_label() -> void:
     if layer_label != null:
-        layer_label.text = "Chunk Layer %d" % (1 - layer_depth)
-    if layer_up_button != null:
-        layer_up_button.disabled = layer_depth >= 0
-    if layer_down_button != null:
-        layer_down_button.disabled = layer_depth <= -15
+        layer_label.text = "Layer %d" % active_layer
 
-func _set_mode_button_state(button: Button, enabled: bool, active: bool) -> void:
-    if button == null:
-        return
-    button.disabled = not enabled
-    button.button_pressed = active
+func set_sim_clock(clock) -> void:
+    _sim_clock = clock
+    _refresh_time_controls()
 
-func _refresh_status_text(simulation: Simulation) -> void:
-    if label == null:
+func _process(_delta: float) -> void:
+    _refresh_time_controls()
+
+func _refresh_time_controls() -> void:
+    if tick_label != null and _last_synced_simulation != null:
+        tick_label.text = "Tick %d" % _last_synced_simulation.tick
+    if pause_button != null and _sim_clock != null:
+        pause_button.text = "Resume" if _sim_clock.paused else "Pause"
+
+func _on_pause_button_pressed() -> void:
+    if _sim_clock != null:
+        _sim_clock.set_paused(not _sim_clock.paused)
+
+func sync_from_simulation(simulation) -> void:
+    _last_synced_simulation = simulation
+    _refresh_time_controls()
+
+# --- Tile inspector -----------------------------------------------------------
+
+func show_tile_details(text: String) -> void:
+    if inspector_label != null:
+        inspector_label.text = text
+    if inspector_panel != null:
+        inspector_panel.visible = true
+
+func hide_tile_details() -> void:
+    if inspector_panel != null:
+        inspector_panel.visible = false
+
+# --- Stockpile config window --------------------------------------------------
+
+func show_stockpile_config(stockpile_id: String, accepted_types: Array) -> void:
+    _config_stockpile_id = stockpile_id
+    if config_title != null:
+        config_title.text = "Stockpile %s — Allowed Items" % stockpile_id
+    for item_type in _config_checkboxes.keys():
+        var checkbox: CheckBox = _config_checkboxes[item_type]
+        checkbox.set_pressed_no_signal(accepted_types.has(item_type))
+    if config_panel != null:
+        config_panel.visible = true
+
+func hide_stockpile_config() -> void:
+    _config_stockpile_id = ""
+    if config_panel != null:
+        config_panel.visible = false
+
+func _on_config_item_toggled(_pressed: bool, _item_type: String) -> void:
+    if _config_stockpile_id == "":
         return
-    var speed_str: String = "1x"
-    var paused_str: String = ""
-    if sim_clock != null:
-        speed_str = str(sim_clock.speed) + "x"
-        if sim_clock.paused:
-            paused_str = " PAUSED"
-    var tool_str: String = str(TOOL_MODE_LABELS.get(active_tool_mode, active_tool_mode))
-    var stockpile_str: String = ""
-    if selected_stockpile_id != "":
-        stockpile_str = " | Stockpile %s %s" % [selected_stockpile_id, selected_stockpile_mode.capitalize()]
-    var workshop_str: String = ""
-    if selected_workshop_id != "":
-        workshop_str = " | Workshop %s" % selected_workshop_name
-    var layer_str: String = " | Chunk Layer %d" % (1 - layer_depth)
-    var warning_str: String = ""
-    if last_warning != "":
-        warning_str = " | Warning: " + last_warning
-    if simulation == null:
-        label.text = "Tool %s | Speed %s%s%s%s%s%s" % [tool_str, speed_str, paused_str, layer_str, stockpile_str, workshop_str, warning_str]
+    var accepted: Array = []
+    for item_type in STOCKPILE_ITEM_TYPES:
+        var checkbox: CheckBox = _config_checkboxes.get(item_type)
+        if checkbox != null and checkbox.button_pressed:
+            accepted.append(item_type)
+    stockpile_items_changed.emit(_config_stockpile_id, accepted)
+
+# --- Wall material picker -----------------------------------------------------
+
+func show_wall_config(material: String) -> void:
+    _wall_material = material
+    _refresh_wall_button_states()
+    if wall_config_panel != null:
+        wall_config_panel.visible = true
+
+func hide_wall_config() -> void:
+    if wall_config_panel != null:
+        wall_config_panel.visible = false
+
+func _on_wall_material_pressed(material: String) -> void:
+    _wall_material = material
+    _refresh_wall_button_states()
+    wall_material_changed.emit(material)
+
+# --- Workshop recipe queue ----------------------------------------------------
+
+func show_workshop_orders(summary: Dictionary) -> void:
+    _workshop_building_id = str(summary.get("building_id", ""))
+    if workshop_title != null:
+        workshop_title.text = "%s — Recipes" % str(summary.get("display_name", "Workshop"))
+    if workshop_recipes_container != null:
+        for child in workshop_recipes_container.get_children():
+            child.queue_free()
+        for recipe_id in summary.get("recipes", []):
+            var button := Button.new()
+            button.text = "Queue %s" % str(RECIPE_LABELS.get(recipe_id, str(recipe_id).capitalize()))
+            button.pressed.connect(_on_recipe_queue_pressed.bind(str(recipe_id)))
+            workshop_recipes_container.add_child(button)
+    if workshop_config_panel != null:
+        workshop_config_panel.visible = true
+
+func hide_workshop_orders() -> void:
+    _workshop_building_id = ""
+    if workshop_config_panel != null:
+        workshop_config_panel.visible = false
+
+func _on_recipe_queue_pressed(recipe_id: String) -> void:
+    if _workshop_building_id == "":
         return
-    var snapshot: Dictionary = simulation.canonical_snapshot()
-    label.text = "Tick %d | Units %d | Resources %d | Jobs %d | Hash %s | Speed %s%s | Tool %s%s%s%s%s" % [
-        snapshot["tick"],
-        snapshot["units"].size(),
-        snapshot["resources"].size(),
-        snapshot["jobs"].size(),
-        simulation.state_hash().substr(0, 8),
-        speed_str,
-        paused_str,
-        tool_str,
-        layer_str,
-        stockpile_str,
-        workshop_str,
-        warning_str,
-    ]
+    recipe_queue_requested.emit(_workshop_building_id, recipe_id)

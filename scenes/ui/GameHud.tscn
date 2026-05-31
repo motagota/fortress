@@ -1,342 +1,143 @@
-[gd_scene load_steps=10 format=3 uid="uid://bc18tmyo5n4pm"]
+[gd_scene load_steps=2 format=3 uid="uid://bvqmxhx8kqer8"]
 
-[ext_resource type="Script" uid="uid://c1eool45g3nde" path="res://scripts/ui/game_hud.gd" id="1_game_hud"]
-
-[sub_resource type="Theme" id="Theme_jfmo1"]
-default_font_size = 24
-
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_jfmo1"]
-bg_color = Color(0.270588, 0.709804, 0.188235, 0.588235)
-
-[sub_resource type="Theme" id="Theme_y6lhn"]
-default_font_size = 24
-
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_ncstu"]
-bg_color = Color(0.266667, 0.698039, 0.415686, 0.584314)
-border_width_left = 1
-border_width_top = 1
-border_width_right = 1
-border_width_bottom = 1
-border_color = Color(0, 0, 0.298039, 1)
-
-[sub_resource type="Theme" id="Theme_py7ai"]
-default_font_size = 28
-
-[sub_resource type="Theme" id="Theme_ncstu"]
-default_font_size = 22
-
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_py7ai"]
-bg_color = Color(0.458824, 0.572549, 0.968627, 0.588235)
-border_width_left = 1
-border_width_top = 1
-border_width_right = 1
-border_width_bottom = 1
-border_color = Color(0.153393, 9.05821e-05, 0.499829, 1)
-
-[sub_resource type="Theme" id="Theme_a3p5v"]
-default_font_size = 26
+[ext_resource type="Script" path="res://scripts/ui/game_hud.gd" id="1_hud"]
 
 [node name="GameHud" type="CanvasLayer"]
-script = ExtResource("1_game_hud")
+script = ExtResource("1_hud")
 
-[node name="Panel" type="Panel" parent="."]
-offset_left = 5.0
-offset_top = 18.0
-offset_right = 1397.0
-offset_bottom = 283.0
-theme = SubResource("Theme_jfmo1")
+[node name="Toolbar" type="Panel" parent="."]
+anchor_right = 1.0
+offset_bottom = 104.0
 
-[node name="PauseButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 12.0
+[node name="ToolButtons" type="HBoxContainer" parent="Toolbar"]
+offset_left = 8.0
 offset_top = 6.0
-offset_right = 92.0
-offset_bottom = 30.0
+offset_right = 1800.0
+offset_bottom = 46.0
+theme_override_constants/separation = 6
+
+[node name="StatusRow" type="HBoxContainer" parent="Toolbar"]
+offset_left = 8.0
+offset_top = 56.0
+offset_right = 1800.0
+offset_bottom = 96.0
+theme_override_constants/separation = 16
+
+[node name="LayerLabel" type="Label" parent="Toolbar/StatusRow"]
+layout_mode = 2
+text = "Layer 0"
+
+[node name="TickLabel" type="Label" parent="Toolbar/StatusRow"]
+layout_mode = 2
+text = "Tick 0"
+
+[node name="PauseButton" type="Button" parent="Toolbar/StatusRow"]
+layout_mode = 2
 text = "Pause"
 
-[node name="Speed1x" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 98.0
-offset_top = 6.0
-offset_right = 158.0
-offset_bottom = 30.0
-text = "1x"
-
-[node name="Speed2x" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 162.0
-offset_top = 6.0
-offset_right = 222.0
-offset_bottom = 30.0
-text = "2x"
-
-[node name="Speed4x" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 226.0
-offset_top = 6.0
-offset_right = 286.0
-offset_bottom = 30.0
-text = "4x"
-
-[node name="InspectButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 6.0
-offset_top = 64.0
-offset_right = 119.0
-offset_bottom = 106.0
-text = "1 Inspect"
-
-[node name="GatherWoodButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 133.0
-offset_top = 64.0
-offset_right = 294.0
-offset_bottom = 106.0
-text = "2 Chop Wood"
-
-[node name="GatherStoneButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 299.0
-offset_top = 64.0
-offset_right = 480.0
-offset_bottom = 106.0
-text = "3 Gather Stone"
-
-[node name="GatherFoodButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 483.0
-offset_top = 66.0
-offset_right = 654.0
-offset_bottom = 108.0
-text = "4 Gather Food"
-
-[node name="StockpileButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 663.0
-offset_top = 68.0
-offset_right = 796.0
-offset_bottom = 110.0
-text = "6 Stockpile"
-
-[node name="MineButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 816.0
-offset_top = 68.0
-offset_right = 902.0
-offset_bottom = 110.0
-text = "5 Mine"
-
-[node name="KitchenButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 7.0
-offset_top = 129.0
-offset_right = 123.0
-offset_bottom = 171.0
-text = "7 Kitchen"
-
-[node name="CookMealButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 132.0
-offset_top = 131.0
-offset_right = 261.0
-offset_bottom = 173.0
-disabled = true
-text = "Cook Meal"
-
-[node name="LayerUpButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 273.0
-offset_top = 132.0
-offset_right = 339.0
-offset_bottom = 174.0
-disabled = true
-text = "Q Up"
-
-[node name="LayerDownButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 343.0
-offset_top = 133.0
-offset_right = 437.0
-offset_bottom = 175.0
-text = "E Down"
-
-[node name="LayerLabel" type="Label" parent="Panel"]
-layout_mode = 0
-offset_left = 463.0
-offset_top = 142.0
-offset_right = 549.0
-offset_bottom = 176.0
-text = "Layer 1"
-
-[node name="WorldgenDiagnosticsButton" type="Button" parent="Panel"]
-layout_mode = 0
-offset_left = 572.0
-offset_top = 135.0
-offset_right = 716.0
-offset_bottom = 177.0
-text = "D Worldgen"
-
-[node name="SimInfo" type="Panel" parent="Panel"]
-layout_mode = 1
-anchors_preset = 2
+[node name="Inspector" type="Panel" parent="."]
+visible = false
 anchor_top = 1.0
 anchor_bottom = 1.0
-offset_top = -59.0
-offset_right = 811.0
-grow_vertical = 0
+offset_left = 8.0
+offset_top = -324.0
+offset_right = 392.0
+offset_bottom = -8.0
 
-[node name="StatusLabel" type="Label" parent="Panel/SimInfo"]
-layout_mode = 1
-anchors_preset = 4
-anchor_top = 0.5
-anchor_bottom = 0.5
-offset_left = 20.0
-offset_top = -17.0
-offset_right = 916.0
-offset_bottom = 17.0
-grow_vertical = 2
-text = "Tick 0 | Speed 1x | Tool Inspect"
+[node name="InspectorTitle" type="Label" parent="Inspector"]
+offset_left = 10.0
+offset_top = 8.0
+offset_right = 374.0
+offset_bottom = 34.0
+text = "Tile Details"
 
-[node name="StockpileConfig" type="Panel" parent="Panel"]
-layout_mode = 0
-offset_left = 1055.0
-offset_top = 117.0
-offset_right = 1361.0
-offset_bottom = 173.0
-theme_override_styles/panel = SubResource("StyleBoxFlat_jfmo1")
+[node name="InspectorLabel" type="Label" parent="Inspector"]
+offset_left = 10.0
+offset_top = 40.0
+offset_right = 374.0
+offset_bottom = 308.0
+text = ""
+autowrap_mode = 3
 
-[node name="StorageOnlyButton" type="Button" parent="Panel/StockpileConfig"]
-layout_mode = 1
-anchors_preset = 4
-anchor_top = 0.5
-anchor_bottom = 0.5
-offset_top = -21.0
-offset_right = 108.0
-offset_bottom = 21.0
-grow_vertical = 2
-disabled = true
-toggle_mode = true
-text = "Storage"
-
-[node name="SupplyOnlyButton" type="Button" parent="Panel/StockpileConfig"]
-layout_mode = 1
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -50.0
-offset_top = -21.0
-offset_right = 50.0
-offset_bottom = 21.0
-grow_horizontal = 2
-grow_vertical = 2
-disabled = true
-toggle_mode = true
-text = "Supply"
-
-[node name="BothModeButton" type="Button" parent="Panel/StockpileConfig"]
-layout_mode = 1
-anchors_preset = 6
+[node name="StockpileConfig" type="Panel" parent="."]
+visible = false
 anchor_left = 1.0
-anchor_top = 0.5
 anchor_right = 1.0
-anchor_bottom = 0.5
-offset_left = -63.0
-offset_top = -21.0
-offset_bottom = 21.0
-grow_horizontal = 0
-grow_vertical = 2
-disabled = true
-toggle_mode = true
-text = "Both"
+offset_left = -332.0
+offset_top = 120.0
+offset_right = -8.0
+offset_bottom = 420.0
 
-[node name="JobsPanel" type="Panel" parent="."]
-visible = false
-offset_left = 407.0
-offset_top = 302.0
-offset_right = 1393.0
-offset_bottom = 1065.0
-theme = SubResource("Theme_y6lhn")
-theme_override_styles/panel = SubResource("StyleBoxFlat_ncstu")
-
-[node name="JobsHeaderLabel" type="Label" parent="JobsPanel"]
-layout_mode = 1
-anchors_preset = 5
-anchor_left = 0.5
-anchor_right = 0.5
-offset_left = -52.0
-offset_right = 52.0
-offset_bottom = 39.0
-grow_horizontal = 2
-theme = SubResource("Theme_py7ai")
-text = "Job List"
-
-[node name="JobsListLabel" type="Label" parent="JobsPanel"]
-layout_mode = 0
-offset_left = 12.0
-offset_top = 42.0
-offset_right = 973.0
-offset_bottom = 739.0
-text = "No jobs"
-autowrap_mode = 3
-
-[node name="WorkersPanel" type="Panel" parent="."]
-offset_left = 1434.0
-offset_top = 307.0
-offset_right = 2965.0
-offset_bottom = 1728.0
-theme = SubResource("Theme_ncstu")
-theme_override_styles/panel = SubResource("StyleBoxFlat_py7ai")
-
-[node name="WorkersHeaderLabel" type="Label" parent="WorkersPanel"]
-layout_mode = 1
-anchors_preset = 5
-anchor_left = 0.5
-anchor_right = 0.5
-offset_left = -44.5
-offset_right = 44.5
-offset_bottom = 31.0
-grow_horizontal = 2
-theme = SubResource("Theme_a3p5v")
-text = "Workers"
-
-[node name="WorkersList" type="ItemList" parent="WorkersPanel"]
-layout_mode = 0
-offset_left = 12.0
-offset_top = 42.0
-offset_right = 1513.0
-offset_bottom = 597.0
-auto_height = true
-
-[node name="WorkerDetailLabel" type="Label" parent="WorkersPanel"]
-layout_mode = 0
-offset_left = 19.0
-offset_top = 627.0
-offset_right = 1516.0
-offset_bottom = 1397.0
-text = "Select a worker"
-autowrap_mode = 3
-
-[node name="WorldgenDiagnosticsPanel" type="Panel" parent="."]
-visible = false
-offset_top = 166.0
-offset_right = 920.0
-offset_bottom = 320.0
-
-[node name="WorldgenDiagnosticsHeaderLabel" type="Label" parent="WorldgenDiagnosticsPanel"]
-layout_mode = 0
+[node name="ConfigTitle" type="Label" parent="StockpileConfig"]
 offset_left = 12.0
 offset_top = 10.0
-offset_right = 908.0
-offset_bottom = 34.0
-text = "Worldgen Storage Diagnostics"
+offset_right = 312.0
+offset_bottom = 36.0
+text = "Stockpile — Allowed Items"
 
-[node name="WorldgenDiagnosticsLabel" type="Label" parent="WorldgenDiagnosticsPanel"]
-layout_mode = 0
+[node name="ItemList" type="VBoxContainer" parent="StockpileConfig"]
 offset_left = 12.0
-offset_top = 42.0
-offset_right = 908.0
-offset_bottom = 142.0
-text = "Worldgen diagnostics unavailable"
-autowrap_mode = 3
+offset_top = 44.0
+offset_right = 312.0
+offset_bottom = 250.0
+theme_override_constants/separation = 6
+
+[node name="CloseButton" type="Button" parent="StockpileConfig"]
+offset_left = 12.0
+offset_top = 262.0
+offset_right = 120.0
+offset_bottom = 290.0
+text = "Close"
+
+[node name="WallConfig" type="Panel" parent="."]
+visible = false
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -332.0
+offset_top = 440.0
+offset_right = -8.0
+offset_bottom = 556.0
+
+[node name="WallTitle" type="Label" parent="WallConfig"]
+offset_left = 12.0
+offset_top = 10.0
+offset_right = 312.0
+offset_bottom = 36.0
+text = "Wall Material"
+
+[node name="WallButtons" type="HBoxContainer" parent="WallConfig"]
+offset_left = 12.0
+offset_top = 44.0
+offset_right = 312.0
+offset_bottom = 88.0
+theme_override_constants/separation = 8
+
+[node name="WorkshopConfig" type="Panel" parent="."]
+visible = false
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -332.0
+offset_top = 576.0
+offset_right = -8.0
+offset_bottom = 760.0
+
+[node name="WorkshopTitle" type="Label" parent="WorkshopConfig"]
+offset_left = 12.0
+offset_top = 10.0
+offset_right = 312.0
+offset_bottom = 36.0
+text = "Workshop — Recipes"
+
+[node name="RecipeButtons" type="VBoxContainer" parent="WorkshopConfig"]
+offset_left = 12.0
+offset_top = 44.0
+offset_right = 312.0
+offset_bottom = 134.0
+theme_override_constants/separation = 6
+
+[node name="CloseButton" type="Button" parent="WorkshopConfig"]
+offset_left = 12.0
+offset_top = 146.0
+offset_right = 120.0
+offset_bottom = 174.0
+text = "Close"

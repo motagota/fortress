@@ -17,12 +17,16 @@ const ConstructionRecordScript := preload("res://scripts/simulation/construction
 const JobScript := preload("res://scripts/simulation/job.gd")
 const JobBoardScript := preload("res://scripts/simulation/job_board.gd")
 
-const INITIAL_UNIT_COUNT := 3
+const INITIAL_UNIT_COUNT := 6
 const HUNGER_EAT_THRESHOLD := 20
 const HUNGER_AFTER_EATING := 0
 const RECIPE_COOK_MEAL := "cook_meal"
+const RECIPE_MAKE_MUD_BRICK := "make_mud_brick"
+const RECIPE_MAKE_WOOD_PLANK := "make_wood_plank"
 const DEEP_MINING_COLLAPSE_DEPTH := 20      # mining at/below this y can collapse
 const DEEP_MINING_COLLAPSE_CHANCE := 25
+const WALL_CAVE_IN_INTERVAL := 50           # constructed walls roll for collapse this often
+const WALL_CAVE_IN_DEPTH_SCALE := 40.0      # depth (below surface) for full collapse risk
 const UNREACHABLE_JOB_RELEASE_TICKS := 4
 const PATHFIND_MAX_NODES := 8000
 const INVALID_CELL := Vector3i(-2147483648, -2147483648, -2147483648)
@@ -75,7 +79,7 @@ func allocate_id(prefix: String) -> String:
     return "%s_%06d" % [prefix, id_counters[prefix]]
 
 func _spawn_initial_units() -> void:
-    var names: Array[String] = ["Ari", "Bo", "Cy"]
+    var names: Array[String] = ["Ari", "Bo", "Cy", "Del", "Em", "Fen"]
     var spots: Array[Vector3i] = _spawn_cells(INITIAL_UNIT_COUNT)
     for i in range(min(INITIAL_UNIT_COUNT, spots.size())):
         var id: String = allocate_id("unit")
@@ -107,6 +111,7 @@ func step_tick() -> void:
     _feed_hungry_units()
     _assign_jobs()
     _advance_units()
+    _process_cave_ins()
     _cleanup_completed_jobs()
 
 # --- Commands -----------------------------------------------------------------
@@ -184,14 +189,18 @@ func _apply_command(command: Dictionary) -> void:
             _create_mine_job(target, priority)
         "DESIGNATE_CHANNEL":
             _create_channel_job(target, priority)
-        "DESIGNATE_BUILD_STAIR":
-            _create_stair_job(target, priority)
+        "DESIGNATE_BUILD_STAIR", "DESIGNATE_BUILD_STAIR_UP":
+            _create_stair_job(target, priority, "up")
+        "DESIGNATE_BUILD_STAIR_DOWN":
+            _create_stair_job(target, priority, "down")
         "DESIGNATE_STOCKPILE":
             designate_stockpile(target, payload)
         "RESIZE_STOCKPILE":
             resize_stockpile(str(payload.get("stockpile_id", "")), str(payload.get("side", "")), int(payload.get("delta", 0)))
         "SET_STOCKPILE_MODE":
             set_stockpile_mode(str(payload.get("stockpile_id", "")), str(payload.get("storage_mode", "")))
+        "SET_STOCKPILE_ITEMS":
+            set_stockpile_accepted_types(str(payload.get("stockpile_id", "")), payload.get("accepted_item_types", []))
         "PLACE_BLUEPRINT":
             create_construction(str(payload.get("building_type", "")), target, priority, payload.get("cells", []))
         "QUEUE_WORKSHOP_RECIPE":
@@ -254,13 +263,29 @@ func _adjacent_walkable_cells(target: Vector3i) -> Array:
             candidates.append(n)
     return candidates
 
-func _create_stair_job(target: Vector3i, priority: int) -> void:
+func _create_stair_job(target: Vector3i, priority: int, direction: String = "up") -> void:
     var cell = world.get_cell(target)
     if cell == null or not cell.has_floor() or cell.has_wall() or cell.has_stair():
         return
+    # A stair spans two layers: the target plus a landing on the partner cell
+    # (above for an up stair, below for a down stair).
+    var partner_offset: Vector3i = Vector3i(0, 1, 0) if direction == "up" else Vector3i(0, -1, 0)
+    var partner = world.get_cell(target + partner_offset)
+    if partner == null:
+        return
+    if direction == "up":
+        # Up stairs need open air above to climb into.
+        if partner.has_wall():
+            return
+    else:
+        # Down stairs may carve through rock below, but never through bedrock.
+        if partner.has_wall() and partner.wall_material == C.MATERIAL_BEDROCK:
+            return
     if job_board.has_open_job_at("BUILD_STAIR", target):
         return
-    job_board.add_job(JobScript.new(allocate_id("job"), "BUILD_STAIR", target, priority))
+    var job = JobScript.new(allocate_id("job"), "BUILD_STAIR", target, priority)
+    job.required_items["direction"] = direction
+    job_board.add_job(job)
 
 func set_unit_job_type_priority(unit_id: String, job_type: String, priority: int) -> bool:
     if not units.has(unit_id):
@@ -497,6 +522,8 @@ func _complete_job(unit, job) -> void:
             _complete_build_job(unit, job)
         "COOK_MEAL":
             _complete_workshop_job(unit, job)
+        "CRAFT_ITEM":
+            _complete_workshop_job(unit, job)
         "MINE_WALL":
             _complete_mine_job(unit, job)
         "CHANNEL_FLOOR":
@@ -555,13 +582,78 @@ func _complete_stair_job(unit, job) -> void:
     if cell == null or not cell.has_floor() or cell.has_wall():
         _fail_job(unit, job)
         return
+    var direction: String = str(job.required_items.get("direction", "up"))
+    var partner_offset: Vector3i = Vector3i(0, 1, 0) if direction == "up" else Vector3i(0, -1, 0)
+    var partner = world.get_cell(job.target_cell + partner_offset)
+    if partner == null:
+        _fail_job(unit, job)
+        return
+    if direction == "up":
+        if partner.has_wall():
+            _fail_job(unit, job)
+            return
+    else:
+        # Carve the cell below if it is solid rock (never bedrock); drop the spoil.
+        if partner.has_wall():
+            if partner.wall_material == C.MATERIAL_BEDROCK:
+                _fail_job(unit, job)
+                return
+            _spawn_item(C.mined_item_type_for_material(partner.wall_material), 1, job.target_cell)
+            partner.wall_material = C.MATERIAL_NONE
+            partner.mining_tier_required = C.MINING_TIER_NONE
+    # Both cells become up/down steps so the staircase spans and is traversable.
     cell.stair = C.STAIR_UP_DOWN
+    partner.stair = C.STAIR_UP_DOWN
+    if not partner.has_floor():
+        partner.floor_material = cell.floor_material
     _finish_job(unit, job)
 
 func _mine_collapses(addr: Vector3i) -> bool:
     if addr.y > DEEP_MINING_COLLAPSE_DEPTH:
         return false
     return rng_streams["event_rng"].range_i(0, 99) < DEEP_MINING_COLLAPSE_CHANCE
+
+# --- Cave-ins (weak constructed walls) ----------------------------------------
+
+# Constructed walls of weak materials (dirt/wood/stone) can collapse over time,
+# the deeper they are the riskier. Natural rock is never built and never rolls.
+func _process_cave_ins() -> void:
+    if tick % WALL_CAVE_IN_INTERVAL != 0:
+        return
+    for construction_id in _sorted_ids(constructions):
+        var construction = constructions[construction_id]
+        if construction.status != "complete":
+            continue
+        var definition: Dictionary = get_building_definition(construction.type)
+        var base: float = float(definition.get("cave_in_base", 0.0))
+        if base <= 0.0:
+            continue
+        var chance: float = base * _cave_in_depth_factor(construction.target_cell)
+        if chance <= 0.0:
+            continue
+        if rng_streams["event_rng"].range_i(0, 9999) < int(round(chance * 10000.0)):
+            _collapse_construction(construction_id)
+
+func _cave_in_depth_factor(addr: Vector3i) -> float:
+    var depth: int = C.SURFACE_Y_MEAN - addr.y
+    if depth <= 0:
+        return 0.0
+    return minf(1.0, float(depth) / WALL_CAVE_IN_DEPTH_SCALE)
+
+func _collapse_construction(construction_id: String) -> void:
+    var construction = constructions[construction_id]
+    construction.status = "collapsed"
+    construction.completed_building_id = ""
+    for cell_addr in construction.cells:
+        var cell = world.get_cell(cell_addr)
+        if cell == null:
+            continue
+        var material: String = cell.wall_material
+        cell.wall_material = C.MATERIAL_NONE
+        cell.building_id = ""
+        cell.mining_tier_required = C.MINING_TIER_NONE
+        if material != C.MATERIAL_NONE:
+            _spawn_item(C.mined_item_type_for_material(material), 1, cell_addr)
 
 # --- Resources & items --------------------------------------------------------
 
@@ -701,6 +793,18 @@ func set_stockpile_mode(stockpile_id: String, storage_mode: String) -> bool:
     if not stockpiles.has(stockpile_id):
         return false
     return stockpiles[stockpile_id].set_storage_mode(storage_mode)
+
+func set_stockpile_accepted_types(stockpile_id: String, types: Array) -> bool:
+    if not stockpiles.has(stockpile_id):
+        return false
+    var clean: Array[String] = []
+    for raw in types:
+        var item_type: String = str(raw)
+        if item_type != "" and not clean.has(item_type):
+            clean.append(item_type)
+    clean.sort()
+    stockpiles[stockpile_id].accepted_item_types = clean
+    return true
 
 func resize_stockpile(stockpile_id: String, side: String, delta: int) -> bool:
     if not stockpiles.has(stockpile_id) or not (side in ["north", "south", "west", "east"]) or (delta != -1 and delta != 1):
@@ -865,10 +969,22 @@ func create_construction(building_type: String, target: Vector3i, priority: int 
         var c = world.peek_cell(cell)
         if not world.is_walkable(cell) or c.building_id != "" or c.resource_id != "" or c.has_plant():
             return {"ok": false, "warning": "Build area is blocked", "construction_id": ""}
+    if definition.has("requires_adjacent_liquid"):
+        var liquid: String = str(definition["requires_adjacent_liquid"])
+        if not _footprint_adjacent_to_liquid(footprint, liquid):
+            return {"ok": false, "warning": "Brick kiln must be next to water", "construction_id": ""}
     var id: String = allocate_id("construction")
     constructions[id] = ConstructionRecordScript.new(id, building_type, target, definition.get("required_items", {}), priority, "planned", "", footprint)
     _try_reserve_construction_resources(id)
     return {"ok": true, "warning": "", "construction_id": id}
+
+func _footprint_adjacent_to_liquid(footprint: Array[Vector3i], liquid: String) -> bool:
+    var offsets := [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1)]
+    for cell in footprint:
+        for offset in offsets:
+            if world.peek_cell(cell + offset).liquid_type == liquid:
+                return true
+    return false
 
 func cancel_construction(construction_id: String) -> bool:
     if not constructions.has(construction_id):
@@ -967,12 +1083,14 @@ func _complete_build_job(unit, job) -> void:
     construction.status = "complete"
     var definition: Dictionary = get_building_definition(construction.type)
     var blocks: bool = bool(definition.get("blocks_movement", false))
+    var wall_material: String = str(definition.get("wall_material", C.MATERIAL_LOOSE_STONE))
     for cell_addr in construction.cells:
         var cell = world.get_cell(cell_addr)
         if cell != null:
             cell.building_id = building_id
             if blocks:
-                cell.wall_material = C.MATERIAL_LOOSE_STONE
+                cell.wall_material = wall_material
+                cell.mining_tier_required = C.required_mining_tier_for_material(wall_material)
     _finish_job(unit, job)
 
 # --- Workshops ----------------------------------------------------------------
@@ -1122,6 +1240,12 @@ func _recipe_definition(recipe_id: String) -> Dictionary:
         RECIPE_COOK_MEAL:
             return {"id": RECIPE_COOK_MEAL, "display_name": "Cook Meal", "job_type": "COOK_MEAL",
                 "required_items": {"food": 2}, "produced_items": {"meal": 1}, "work_ticks": 4}
+        RECIPE_MAKE_MUD_BRICK:
+            return {"id": RECIPE_MAKE_MUD_BRICK, "display_name": "Make Mud Brick", "job_type": "CRAFT_ITEM",
+                "required_items": {"dirt": 2}, "produced_items": {"mud_brick": 1}, "work_ticks": 5}
+        RECIPE_MAKE_WOOD_PLANK:
+            return {"id": RECIPE_MAKE_WOOD_PLANK, "display_name": "Make Wood Plank", "job_type": "CRAFT_ITEM",
+                "required_items": {"wood": 1}, "produced_items": {"wood_plank": 2}, "work_ticks": 5}
     return {}
 
 # --- Job finalization ---------------------------------------------------------
