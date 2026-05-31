@@ -207,6 +207,10 @@ func _apply_command(command: Dictionary) -> void:
             create_workshop_order(str(payload.get("building_id", "")), str(payload.get("recipe_id", "")), priority)
         "SET_UNIT_JOB_PRIORITY":
             set_unit_job_type_priority(str(payload.get("unit_id", "")), str(payload.get("job_type", "")), int(payload.get("priority", 1)))
+        "SET_UNIT_NAME":
+            set_unit_name(str(payload.get("unit_id", "")), str(payload.get("name", "")))
+        "SET_UNIT_ALLOWED_JOB":
+            set_unit_allowed_job(str(payload.get("unit_id", "")), str(payload.get("job_type", "")), bool(payload.get("enabled", true)))
 
 # --- Job creation -------------------------------------------------------------
 
@@ -292,6 +296,46 @@ func set_unit_job_type_priority(unit_id: String, job_type: String, priority: int
         return false
     units[unit_id].set_job_type_priority(job_type, priority)
     return true
+
+func set_unit_name(unit_id: String, name: String) -> bool:
+    if not units.has(unit_id):
+        return false
+    var trimmed: String = name.strip_edges()
+    if trimmed == "":
+        return false
+    units[unit_id].display_name = trimmed
+    return true
+
+func set_unit_allowed_job(unit_id: String, job_type: String, enabled: bool) -> bool:
+    if not units.has(unit_id):
+        return false
+    var normalized: String = str(job_type).strip_edges().to_upper()
+    if normalized == "":
+        return false
+    var unit = units[unit_id]
+    var has: bool = unit.allowed_jobs.has(normalized)
+    if enabled and not has:
+        unit.allowed_jobs.append(normalized)
+    elif not enabled and has:
+        unit.allowed_jobs.erase(normalized)
+    return true
+
+# Read-only display bundle for the worker UI: canonical unit fields plus the
+# resolved current-job type/target (if any). Never mutates state.
+func unit_summary(unit_id: String) -> Dictionary:
+    if not units.has(unit_id):
+        return {}
+    var unit = units[unit_id]
+    var summary: Dictionary = unit.to_canonical_dict()
+    var job_type: String = ""
+    var job_target: Array = []
+    if unit.current_job_id != "" and job_board != null and job_board.jobs.has(unit.current_job_id):
+        var job = job_board.jobs[unit.current_job_id]
+        job_type = str(job.type)
+        job_target = [job.target_cell.x, job.target_cell.y, job.target_cell.z]
+    summary["current_job_type"] = job_type
+    summary["current_job_target"] = job_target
+    return summary
 
 func create_haul_jobs_for_loose_items() -> void:
     var reserved_cells: Dictionary = _active_haul_destination_cells()

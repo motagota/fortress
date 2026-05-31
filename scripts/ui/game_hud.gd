@@ -13,6 +13,17 @@ signal layer_change_requested(delta: int)
 signal stockpile_items_changed(stockpile_id: String, accepted_types: Array)
 signal wall_material_changed(material: String)
 signal recipe_queue_requested(building_id: String, recipe_id: String)
+signal worker_selected(unit_id: String)
+signal worker_rename_requested(unit_id: String, new_name: String)
+signal worker_allowed_job_toggled(unit_id: String, job_type: String, enabled: bool)
+signal worker_job_priority_changed(unit_id: String, job_type: String, priority: int)
+
+# Job types a colonist can be assigned (mirrors SimUnit.allowed_jobs defaults).
+const WORKER_JOB_TYPES: Array = [
+    "CHOP_TREE", "GATHER_STONE", "GATHER_FOOD",
+    "MINE_WALL", "CHANNEL_FLOOR", "BUILD_STAIR",
+    "HAUL_ITEM", "BUILD_CONSTRUCTION", "COOK_MEAL",
+]
 
 const TOOL_DEFINITIONS: Array = [
     {"id": "inspect", "label": "1 Inspect"},
@@ -41,6 +52,7 @@ const RECIPE_LABELS: Dictionary = {
 @onready var layer_label: Label = $Toolbar/StatusRow/LayerLabel
 @onready var tick_label: Label = $Toolbar/StatusRow/TickLabel
 @onready var pause_button: Button = $Toolbar/StatusRow/PauseButton
+@onready var workers_button: Button = $Toolbar/StatusRow/WorkersButton
 @onready var inspector_panel: Panel = $Inspector
 @onready var inspector_label: Label = $Inspector/InspectorLabel
 @onready var config_panel: Panel = $StockpileConfig
@@ -53,6 +65,14 @@ const RECIPE_LABELS: Dictionary = {
 @onready var workshop_title: Label = $WorkshopConfig/WorkshopTitle
 @onready var workshop_recipes_container: Container = $WorkshopConfig/RecipeButtons
 @onready var workshop_close_button: Button = $WorkshopConfig/CloseButton
+@onready var workers_panel: Panel = $WorkersPanel
+@onready var workers_list: Container = $WorkersPanel/WorkersScroll/WorkersList
+@onready var workers_close_button: Button = $WorkersPanel/WorkersClose
+@onready var worker_detail_panel: Panel = $WorkerDetail
+@onready var worker_detail_close_button: Button = $WorkerDetail/DetailClose
+@onready var worker_name_edit: LineEdit = $WorkerDetail/NameRow/NameEdit
+@onready var worker_name_apply: Button = $WorkerDetail/NameRow/NameApply
+@onready var worker_detail_body: Container = $WorkerDetail/DetailScroll/DetailBody
 
 var _tool_button_lookup: Dictionary = {}
 var _config_checkboxes: Dictionary = {}
@@ -60,6 +80,12 @@ var _wall_button_lookup: Dictionary = {}
 var _config_stockpile_id: String = ""
 var _workshop_building_id: String = ""
 var _wall_material: String = "mud_brick"
+var _selected_unit_id: String = ""
+var _worker_row_buttons: Dictionary = {}
+var _detail_labels: Dictionary = {}
+var _detail_need_bars: Dictionary = {}
+var _detail_job_checkboxes: Dictionary = {}
+var _detail_job_spins: Dictionary = {}
 var active_tool: String = "inspect"
 var active_layer: int = C.SURFACE_Y_MEAN
 var _sim_clock = null
@@ -73,6 +99,10 @@ func _ready() -> void:
     _connect_pressed(pause_button, _on_pause_button_pressed)
     _connect_pressed(config_close_button, hide_stockpile_config)
     _connect_pressed(workshop_close_button, hide_workshop_orders)
+    _connect_pressed(workers_button, toggle_workers_panel)
+    _connect_pressed(workers_close_button, hide_workers_panel)
+    _connect_pressed(worker_detail_close_button, hide_worker_detail)
+    _connect_pressed(worker_name_apply, _on_worker_name_apply)
     _refresh_tool_button_states()
     _refresh_wall_button_states()
     _refresh_layer_label()
@@ -83,6 +113,7 @@ func _resolve_nodes() -> void:
     layer_label = get_node_or_null("Toolbar/StatusRow/LayerLabel")
     tick_label = get_node_or_null("Toolbar/StatusRow/TickLabel")
     pause_button = get_node_or_null("Toolbar/StatusRow/PauseButton")
+    workers_button = get_node_or_null("Toolbar/StatusRow/WorkersButton")
     inspector_panel = get_node_or_null("Inspector")
     inspector_label = get_node_or_null("Inspector/InspectorLabel")
     config_panel = get_node_or_null("StockpileConfig")
@@ -95,6 +126,14 @@ func _resolve_nodes() -> void:
     workshop_title = get_node_or_null("WorkshopConfig/WorkshopTitle")
     workshop_recipes_container = get_node_or_null("WorkshopConfig/RecipeButtons")
     workshop_close_button = get_node_or_null("WorkshopConfig/CloseButton")
+    workers_panel = get_node_or_null("WorkersPanel")
+    workers_list = get_node_or_null("WorkersPanel/WorkersScroll/WorkersList")
+    workers_close_button = get_node_or_null("WorkersPanel/WorkersClose")
+    worker_detail_panel = get_node_or_null("WorkerDetail")
+    worker_detail_close_button = get_node_or_null("WorkerDetail/DetailClose")
+    worker_name_edit = get_node_or_null("WorkerDetail/NameRow/NameEdit")
+    worker_name_apply = get_node_or_null("WorkerDetail/NameRow/NameApply")
+    worker_detail_body = get_node_or_null("WorkerDetail/DetailScroll/DetailBody")
 
 func _build_tool_buttons() -> void:
     if tool_buttons_container == null:
@@ -188,6 +227,10 @@ func _on_pause_button_pressed() -> void:
 func sync_from_simulation(simulation) -> void:
     _last_synced_simulation = simulation
     _refresh_time_controls()
+    if workers_panel != null and workers_panel.visible:
+        _refresh_workers_list(simulation)
+    if worker_detail_panel != null and worker_detail_panel.visible and _selected_unit_id != "":
+        _refresh_worker_detail(simulation, false)
 
 # --- Tile inspector -----------------------------------------------------------
 
@@ -271,3 +314,207 @@ func _on_recipe_queue_pressed(recipe_id: String) -> void:
     if _workshop_building_id == "":
         return
     recipe_queue_requested.emit(_workshop_building_id, recipe_id)
+
+# --- Workers roster -----------------------------------------------------------
+
+func toggle_workers_panel() -> void:
+    if workers_panel != null and workers_panel.visible:
+        hide_workers_panel()
+    else:
+        show_workers_panel()
+
+func show_workers_panel() -> void:
+    if workers_panel != null:
+        workers_panel.visible = true
+        _refresh_workers_list(_last_synced_simulation)
+
+func hide_workers_panel() -> void:
+    if workers_panel != null:
+        workers_panel.visible = false
+
+func _refresh_workers_list(simulation) -> void:
+    if workers_list == null or simulation == null:
+        return
+    var unit_ids: Array = simulation.units.keys()
+    unit_ids.sort()
+    # Only rebuild the row buttons when the set of colonists changes. Recreating
+    # them every tick would free the button mid-click, swallowing the press.
+    if not _worker_rows_match(unit_ids):
+        for child in workers_list.get_children():
+            child.queue_free()
+        _worker_row_buttons.clear()
+        for unit_id in unit_ids:
+            var button := Button.new()
+            button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+            button.pressed.connect(_on_worker_row_pressed.bind(str(unit_id)))
+            workers_list.add_child(button)
+            _worker_row_buttons[str(unit_id)] = button
+    for unit_id in unit_ids:
+        var button: Button = _worker_row_buttons.get(str(unit_id))
+        if button != null:
+            button.text = _worker_row_text(simulation, unit_id)
+
+func _worker_rows_match(unit_ids: Array) -> bool:
+    if _worker_row_buttons.size() != unit_ids.size():
+        return false
+    for unit_id in unit_ids:
+        if not _worker_row_buttons.has(str(unit_id)):
+            return false
+    return true
+
+func _worker_row_text(simulation, unit_id) -> String:
+    var unit = simulation.units[unit_id]
+    var job: String = ""
+    if unit.current_job_id != "" and simulation.job_board != null and simulation.job_board.jobs.has(unit.current_job_id):
+        job = str(simulation.job_board.jobs[unit.current_job_id].type)
+    return "%s — %s%s" % [unit.display_name, unit.state, (" (" + job + ")") if job != "" else ""]
+
+func _on_worker_row_pressed(unit_id: String) -> void:
+    worker_selected.emit(unit_id)
+
+# --- Worker detail ------------------------------------------------------------
+
+func select_worker(unit_id: String) -> void:
+    _selected_unit_id = unit_id
+    if worker_detail_panel != null:
+        worker_detail_panel.visible = true
+    _refresh_worker_detail(_last_synced_simulation, true)
+
+func hide_worker_detail() -> void:
+    _selected_unit_id = ""
+    if worker_detail_panel != null:
+        worker_detail_panel.visible = false
+
+func _on_worker_name_apply() -> void:
+    if _selected_unit_id == "" or worker_name_edit == null:
+        return
+    var new_name: String = worker_name_edit.text.strip_edges()
+    if new_name != "":
+        worker_rename_requested.emit(_selected_unit_id, new_name)
+
+# selection_changed: when true, rebuild the panel structure and (re)seed the
+# name field. On plain ticks we only update values in place — recreating the
+# checkboxes/spinboxes every tick would free them mid-click and swallow edits.
+func _refresh_worker_detail(simulation, selection_changed: bool) -> void:
+    if worker_detail_body == null or simulation == null or _selected_unit_id == "":
+        return
+    var summary: Dictionary = simulation.unit_summary(_selected_unit_id)
+    if summary.is_empty():
+        hide_worker_detail()
+        return
+    if selection_changed:
+        if worker_name_edit != null:
+            worker_name_edit.text = str(summary.get("display_name", ""))
+        _build_worker_detail()
+    _update_worker_detail(summary)
+
+func _build_worker_detail() -> void:
+    for child in worker_detail_body.get_children():
+        child.queue_free()
+    _detail_labels.clear()
+    _detail_need_bars.clear()
+    _detail_job_checkboxes.clear()
+    _detail_job_spins.clear()
+    _detail_labels["state"] = _add_detail_label("")
+    _detail_labels["position"] = _add_detail_label("")
+    _detail_labels["job"] = _add_detail_label("")
+    _add_detail_label("— Needs —")
+    _detail_need_bars["hunger"] = _add_need_bar("Hunger")
+    _detail_need_bars["energy"] = _add_need_bar("Energy")
+    _detail_need_bars["morale"] = _add_need_bar("Morale")
+    _detail_labels["skills"] = _add_detail_label("")
+    _detail_labels["inventory"] = _add_detail_label("")
+    _add_detail_label("— Work —")
+    for job in WORKER_JOB_TYPES:
+        _add_job_row(job)
+
+func _update_worker_detail(summary: Dictionary) -> void:
+    var pos: Array = summary.get("position", [0, 0, 0])
+    _set_detail_label("state", "State: %s" % str(summary.get("state", "")))
+    _set_detail_label("position", "Position: (%d, %d, %d)" % [int(pos[0]), int(pos[1]), int(pos[2])])
+    var job_type: String = str(summary.get("current_job_type", ""))
+    if job_type != "":
+        var jt: Array = summary.get("current_job_target", [0, 0, 0])
+        _set_detail_label("job", "Job: %s @ (%d, %d, %d)" % [job_type, int(jt[0]), int(jt[1]), int(jt[2])])
+    else:
+        _set_detail_label("job", "Job: idle")
+    var needs: Dictionary = summary.get("needs", {})
+    _set_need_bar("hunger", int(needs.get("hunger", 0)))
+    _set_need_bar("energy", int(needs.get("energy", 0)))
+    _set_need_bar("morale", int(needs.get("morale", 0)))
+    var skills: Dictionary = summary.get("skills", {})
+    var skill_keys: Array = skills.keys()
+    skill_keys.sort()
+    var skill_text: Array = []
+    for k in skill_keys:
+        skill_text.append("%s %d" % [str(k).capitalize(), int(skills[k])])
+    _set_detail_label("skills", "Skills: %s" % (", ".join(skill_text) if not skill_text.is_empty() else "none"))
+    var inventory: Array = summary.get("inventory", [])
+    _set_detail_label("inventory", "Carrying: %s" % (str(inventory.size()) + " item(s)" if not inventory.is_empty() else "nothing"))
+    var allowed: Array = summary.get("allowed_jobs", [])
+    var priorities: Dictionary = summary.get("job_type_priorities", {})
+    for job in WORKER_JOB_TYPES:
+        var is_allowed: bool = allowed.has(job)
+        var checkbox: CheckBox = _detail_job_checkboxes.get(job)
+        if checkbox != null:
+            checkbox.set_pressed_no_signal(is_allowed)
+        var spin: SpinBox = _detail_job_spins.get(job)
+        if spin != null:
+            spin.set_value_no_signal(clampi(int(priorities.get(job, 1)), 1, 9))
+            spin.editable = is_allowed
+
+func _set_detail_label(key: String, text: String) -> void:
+    var label: Label = _detail_labels.get(key)
+    if label != null:
+        label.text = text
+
+func _set_need_bar(key: String, value: int) -> void:
+    var bar: ProgressBar = _detail_need_bars.get(key)
+    if bar != null:
+        bar.value = clampi(value, 0, 100)
+
+func _add_detail_label(text: String) -> Label:
+    var label := Label.new()
+    label.text = text
+    worker_detail_body.add_child(label)
+    return label
+
+func _add_need_bar(label_text: String) -> ProgressBar:
+    var row := HBoxContainer.new()
+    row.add_theme_constant_override("separation", 6)
+    var label := Label.new()
+    label.text = label_text
+    label.custom_minimum_size = Vector2(70, 0)
+    row.add_child(label)
+    var bar := ProgressBar.new()
+    bar.min_value = 0
+    bar.max_value = 100
+    bar.custom_minimum_size = Vector2(200, 18)
+    row.add_child(bar)
+    worker_detail_body.add_child(row)
+    return bar
+
+func _add_job_row(job_type: String) -> void:
+    var row := HBoxContainer.new()
+    row.add_theme_constant_override("separation", 6)
+    var checkbox := CheckBox.new()
+    checkbox.text = job_type.capitalize()
+    checkbox.custom_minimum_size = Vector2(200, 0)
+    checkbox.toggled.connect(_on_worker_job_toggled.bind(job_type))
+    row.add_child(checkbox)
+    _detail_job_checkboxes[job_type] = checkbox
+    var spin := SpinBox.new()
+    spin.min_value = 1
+    spin.max_value = 9
+    spin.value_changed.connect(_on_worker_priority_changed.bind(job_type))
+    row.add_child(spin)
+    _detail_job_spins[job_type] = spin
+    worker_detail_body.add_child(row)
+
+func _on_worker_job_toggled(enabled: bool, job_type: String) -> void:
+    if _selected_unit_id != "":
+        worker_allowed_job_toggled.emit(_selected_unit_id, job_type, enabled)
+
+func _on_worker_priority_changed(value: float, job_type: String) -> void:
+    if _selected_unit_id != "":
+        worker_job_priority_changed.emit(_selected_unit_id, job_type, int(value))

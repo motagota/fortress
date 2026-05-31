@@ -35,6 +35,10 @@ text = "Tick 0"
 layout_mode = 2
 text = "Pause"
 
+[node name="WorkersButton" type="Button" parent="Toolbar/StatusRow"]
+layout_mode = 2
+text = "Workers (R)"
+
 [node name="Inspector" type="Panel" parent="."]
 visible = false
 anchor_top = 1.0
@@ -141,3 +145,76 @@ offset_top = 146.0
 offset_right = 120.0
 offset_bottom = 174.0
 text = "Close"
+
+[node name="WorkersPanel" type="Panel" parent="."]
+visible = false
+offset_left = 8.0
+offset_top = 120.0
+offset_right = 300.0
+offset_bottom = 560.0
+
+[node name="WorkersTitle" type="Label" parent="WorkersPanel"]
+offset_left = 12.0
+offset_top = 10.0
+offset_right = 280.0
+offset_bottom = 36.0
+text = "Workers"
+
+[node name="WorkersClose" type="Button" parent="WorkersPanel"]
+offset_left = 200.0
+offset_top = 8.0
+offset_right = 280.0
+offset_bottom = 36.0
+text = "Close"
+
+[node name="WorkersScroll" type="ScrollContainer" parent="WorkersPanel"]
+offset_left = 12.0
+offset_top = 44.0
+offset_right = 280.0
+offset_bottom = 428.0
+
+[node name="WorkersList" type="VBoxContainer" parent="WorkersPanel/WorkersScroll"]
+custom_minimum_size = Vector2(256, 0)
+theme_override_constants/separation = 4
+
+[node name="WorkerDetail" type="Panel" parent="."]
+visible = false
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -344.0
+offset_top = 120.0
+offset_right = -8.0
+offset_bottom = 660.0
+
+[node name="DetailClose" type="Button" parent="WorkerDetail"]
+offset_left = 248.0
+offset_top = 8.0
+offset_right = 328.0
+offset_bottom = 36.0
+text = "Close"
+
+[node name="NameRow" type="HBoxContainer" parent="WorkerDetail"]
+offset_left = 12.0
+offset_top = 8.0
+offset_right = 240.0
+offset_bottom = 36.0
+theme_override_constants/separation = 6
+
+[node name="NameEdit" type="LineEdit" parent="WorkerDetail/NameRow"]
+custom_minimum_size = Vector2(160, 0)
+layout_mode = 2
+placeholder_text = "Name"
+
+[node name="NameApply" type="Button" parent="WorkerDetail/NameRow"]
+layout_mode = 2
+text = "Apply"
+
+[node name="DetailScroll" type="ScrollContainer" parent="WorkerDetail"]
+offset_left = 12.0
+offset_top = 44.0
+offset_right = 328.0
+offset_bottom = 528.0
+
+[node name="DetailBody" type="VBoxContainer" parent="WorkerDetail/DetailScroll"]
+custom_minimum_size = Vector2(304, 0)
+theme_override_constants/separation = 6

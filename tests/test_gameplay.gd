@@ -176,3 +176,39 @@ func test_make_mud_brick_requires_water():
 	assert_true(bool(order.get("ok", false)), "brick order should be accepted: %s" % str(order.get("warning", "")))
 	_step(sim, 18)
 	assert_gt(_count_items(sim, "mud_brick"), 0, "the kiln should bake dirt into a mud brick")
+
+func _any_unit_id(sim) -> String:
+	var ids: Array = sim.units.keys()
+	ids.sort()
+	return str(ids[0]) if not ids.is_empty() else ""
+
+func test_set_unit_name_via_command():
+	var sim = _new_sim()
+	var unit_id: String = _any_unit_id(sim)
+	assert_ne(unit_id, "", "the new game should spawn at least one colonist")
+	sim.queue_command(sim.tick + 1, "p", "SET_UNIT_NAME", Vector3i.ZERO, {"unit_id": unit_id, "name": "Ada"})
+	_step(sim, 1)
+	assert_eq(sim.units[unit_id].display_name, "Ada", "SET_UNIT_NAME should rename the colonist")
+	# Blank names are ignored.
+	sim.set_unit_name(unit_id, "   ")
+	assert_eq(sim.units[unit_id].display_name, "Ada", "a blank name should be rejected")
+
+func test_set_unit_allowed_job_toggles_membership():
+	var sim = _new_sim()
+	var unit_id: String = _any_unit_id(sim)
+	assert_true(sim.units[unit_id].allowed_jobs.has("MINE_WALL"), "mining should be allowed by default")
+	sim.queue_command(sim.tick + 1, "p", "SET_UNIT_ALLOWED_JOB", Vector3i.ZERO,
+		{"unit_id": unit_id, "job_type": "mine_wall", "enabled": false})
+	_step(sim, 1)
+	assert_false(sim.units[unit_id].allowed_jobs.has("MINE_WALL"), "disabling should remove the job (case-insensitive)")
+	sim.set_unit_allowed_job(unit_id, "MINE_WALL", true)
+	assert_true(sim.units[unit_id].allowed_jobs.has("MINE_WALL"), "re-enabling should add the job back")
+
+func test_unit_summary_reports_fields():
+	var sim = _new_sim()
+	var unit_id: String = _any_unit_id(sim)
+	var summary: Dictionary = sim.unit_summary(unit_id)
+	assert_true(summary.has("display_name"), "summary should include display_name")
+	assert_true(summary.has("needs"), "summary should include needs")
+	assert_true(summary.has("current_job_type"), "summary should include the resolved current job type")
+	assert_true(sim.unit_summary("nope").is_empty(), "unknown unit ids return an empty summary")

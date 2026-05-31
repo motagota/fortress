@@ -67,6 +67,14 @@ func _ready() -> void:
         hud.wall_material_changed.connect(_on_wall_material_changed)
     if hud != null and hud.has_signal("recipe_queue_requested"):
         hud.recipe_queue_requested.connect(_on_recipe_queue_requested)
+    if hud != null and hud.has_signal("worker_selected"):
+        hud.worker_selected.connect(_on_worker_selected)
+    if hud != null and hud.has_signal("worker_rename_requested"):
+        hud.worker_rename_requested.connect(_on_worker_rename_requested)
+    if hud != null and hud.has_signal("worker_allowed_job_toggled"):
+        hud.worker_allowed_job_toggled.connect(_on_worker_allowed_job_toggled)
+    if hud != null and hud.has_signal("worker_job_priority_changed"):
+        hud.worker_job_priority_changed.connect(_on_worker_job_priority_changed)
     if hud != null and hud.has_method("set_sim_clock"):
         hud.set_sim_clock(sim_clock)
     _set_active_layer(active_layer)
@@ -116,6 +124,7 @@ func _unhandled_input(event: InputEvent) -> void:
             KEY_B: set_active_tool(TOOL_CARPENTER)
             KEY_E: _change_layer(1)
             KEY_C: _change_layer(-1)
+            KEY_R: _toggle_workers_panel()
             KEY_SPACE: _toggle_pause()
             KEY_F5: _quicksave()
             KEY_F9: _quickload()
@@ -230,6 +239,10 @@ func _create_stockpile_rect(a: Vector3i, b: Vector3i) -> void:
 func _inspect_or_configure(cell: Vector3i) -> void:
     if simulation == null:
         return
+    var unit_id: String = _unit_id_at_cell(cell)
+    if unit_id != "":
+        _on_worker_selected(unit_id)
+        return
     var workshop: Dictionary = simulation.find_workshop_at_cell(cell)
     if not workshop.is_empty() and hud != null and hud.has_method("show_workshop_orders"):
         _hide_details()
@@ -262,6 +275,47 @@ func _on_recipe_queue_requested(building_id: String, recipe_id: String) -> void:
         return
     simulation.queue_command(simulation.tick + 1, "player_001", "QUEUE_WORKSHOP_RECIPE", Vector3i.ZERO,
         {"building_id": building_id, "recipe_id": recipe_id, "priority": 5})
+
+# --- Workers ------------------------------------------------------------------
+
+func _unit_id_at_cell(cell: Vector3i) -> String:
+    if simulation == null:
+        return ""
+    for unit_id in simulation.units.keys():
+        if simulation.units[unit_id].position == cell:
+            return str(unit_id)
+    return ""
+
+func _toggle_workers_panel() -> void:
+    if hud != null and hud.has_method("toggle_workers_panel"):
+        hud.toggle_workers_panel()
+
+func _on_worker_selected(unit_id: String) -> void:
+    if simulation == null or not simulation.units.has(unit_id):
+        return
+    var unit = simulation.units[unit_id]
+    _hide_details()
+    _hide_config()
+    if hud != null and hud.has_method("select_worker"):
+        hud.select_worker(unit_id)
+    _set_active_layer(unit.position.y)
+    if camera != null and camera.has_method("focus_on"):
+        camera.focus_on(float(unit.position.x), float(unit.position.z))
+
+func _on_worker_rename_requested(unit_id: String, new_name: String) -> void:
+    if simulation != null:
+        simulation.queue_command(simulation.tick + 1, "player_001", "SET_UNIT_NAME", Vector3i.ZERO,
+            {"unit_id": unit_id, "name": new_name})
+
+func _on_worker_allowed_job_toggled(unit_id: String, job_type: String, enabled: bool) -> void:
+    if simulation != null:
+        simulation.queue_command(simulation.tick + 1, "player_001", "SET_UNIT_ALLOWED_JOB", Vector3i.ZERO,
+            {"unit_id": unit_id, "job_type": job_type, "enabled": enabled})
+
+func _on_worker_job_priority_changed(unit_id: String, job_type: String, priority: int) -> void:
+    if simulation != null:
+        simulation.queue_command(simulation.tick + 1, "player_001", "SET_UNIT_JOB_PRIORITY", Vector3i.ZERO,
+            {"unit_id": unit_id, "job_type": job_type, "priority": priority})
 
 # --- Tools / layers -----------------------------------------------------------
 
