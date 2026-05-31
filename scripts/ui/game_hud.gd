@@ -68,6 +68,11 @@ var _wall_button_lookup: Dictionary = {}
 var _config_stockpile_id: String = ""
 var _wall_material: String = "stone"
 var _selected_unit_id: String = ""
+var _worker_row_buttons: Dictionary = {}
+var _detail_labels: Dictionary = {}
+var _detail_need_bars: Dictionary = {}
+var _detail_job_checkboxes: Dictionary = {}
+var _detail_job_spins: Dictionary = {}
 var active_tool: String = "inspect"
 var active_layer: int = C.SURFACE_Y_MEAN
 var _sim_clock = null
@@ -285,20 +290,39 @@ func hide_workers_panel() -> void:
 func _refresh_workers_list(simulation) -> void:
     if workers_list == null or simulation == null:
         return
-    for child in workers_list.get_children():
-        child.queue_free()
     var unit_ids: Array = simulation.units.keys()
     unit_ids.sort()
+    # Only rebuild the row buttons when the set of colonists changes. Recreating
+    # them every tick would free the button mid-click, swallowing the press.
+    if not _worker_rows_match(unit_ids):
+        for child in workers_list.get_children():
+            child.queue_free()
+        _worker_row_buttons.clear()
+        for unit_id in unit_ids:
+            var button := Button.new()
+            button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+            button.pressed.connect(_on_worker_row_pressed.bind(str(unit_id)))
+            workers_list.add_child(button)
+            _worker_row_buttons[str(unit_id)] = button
     for unit_id in unit_ids:
-        var unit = simulation.units[unit_id]
-        var job: String = ""
-        if unit.current_job_id != "" and simulation.job_board != null and simulation.job_board.jobs.has(unit.current_job_id):
-            job = str(simulation.job_board.jobs[unit.current_job_id].type)
-        var button := Button.new()
-        button.text = "%s — %s%s" % [unit.display_name, unit.state, (" (" + job + ")") if job != "" else ""]
-        button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-        button.pressed.connect(_on_worker_row_pressed.bind(str(unit_id)))
-        workers_list.add_child(button)
+        var button: Button = _worker_row_buttons.get(str(unit_id))
+        if button != null:
+            button.text = _worker_row_text(simulation, unit_id)
+
+func _worker_rows_match(unit_ids: Array) -> bool:
+    if _worker_row_buttons.size() != unit_ids.size():
+        return false
+    for unit_id in unit_ids:
+        if not _worker_row_buttons.has(str(unit_id)):
+            return false
+    return true
+
+func _worker_row_text(simulation, unit_id) -> String:
+    var unit = simulation.units[unit_id]
+    var job: String = ""
+    if unit.current_job_id != "" and simulation.job_board != null and simulation.job_board.jobs.has(unit.current_job_id):
+        job = str(simulation.job_board.jobs[unit.current_job_id].type)
+    return "%s — %s%s" % [unit.display_name, unit.state, (" (" + job + ")") if job != "" else ""]
 
 func _on_worker_row_pressed(unit_id: String) -> void:
     worker_selected.emit(unit_id)
@@ -323,8 +347,9 @@ func _on_worker_name_apply() -> void:
     if new_name != "":
         worker_rename_requested.emit(_selected_unit_id, new_name)
 
-# selection_changed: when true, (re)seed editable fields (name); otherwise leave
-# them alone so the player's in-progress typing isn't clobbered each tick.
+# selection_changed: when true, rebuild the panel structure and (re)seed the
+# name field. On plain ticks we only update values in place — recreating the
+# checkboxes/spinboxes every tick would free them mid-click and swallow edits.
 func _refresh_worker_detail(simulation, selection_changed: bool) -> void:
     if worker_detail_body == null or simulation == null or _selected_unit_id == "":
         return
@@ -332,45 +357,84 @@ func _refresh_worker_detail(simulation, selection_changed: bool) -> void:
     if summary.is_empty():
         hide_worker_detail()
         return
-    if selection_changed and worker_name_edit != null:
-        worker_name_edit.text = str(summary.get("display_name", ""))
+    if selection_changed:
+        if worker_name_edit != null:
+            worker_name_edit.text = str(summary.get("display_name", ""))
+        _build_worker_detail()
+    _update_worker_detail(summary)
+
+func _build_worker_detail() -> void:
     for child in worker_detail_body.get_children():
         child.queue_free()
+    _detail_labels.clear()
+    _detail_need_bars.clear()
+    _detail_job_checkboxes.clear()
+    _detail_job_spins.clear()
+    _detail_labels["state"] = _add_detail_label("")
+    _detail_labels["position"] = _add_detail_label("")
+    _detail_labels["job"] = _add_detail_label("")
+    _add_detail_label("— Needs —")
+    _detail_need_bars["hunger"] = _add_need_bar("Hunger")
+    _detail_need_bars["energy"] = _add_need_bar("Energy")
+    _detail_need_bars["morale"] = _add_need_bar("Morale")
+    _detail_labels["skills"] = _add_detail_label("")
+    _detail_labels["inventory"] = _add_detail_label("")
+    _add_detail_label("— Work —")
+    for job in WORKER_JOB_TYPES:
+        _add_job_row(job)
+
+func _update_worker_detail(summary: Dictionary) -> void:
     var pos: Array = summary.get("position", [0, 0, 0])
-    _add_detail_label("State: %s" % str(summary.get("state", "")))
-    _add_detail_label("Position: (%d, %d, %d)" % [int(pos[0]), int(pos[1]), int(pos[2])])
+    _set_detail_label("state", "State: %s" % str(summary.get("state", "")))
+    _set_detail_label("position", "Position: (%d, %d, %d)" % [int(pos[0]), int(pos[1]), int(pos[2])])
     var job_type: String = str(summary.get("current_job_type", ""))
     if job_type != "":
         var jt: Array = summary.get("current_job_target", [0, 0, 0])
-        _add_detail_label("Job: %s @ (%d, %d, %d)" % [job_type, int(jt[0]), int(jt[1]), int(jt[2])])
+        _set_detail_label("job", "Job: %s @ (%d, %d, %d)" % [job_type, int(jt[0]), int(jt[1]), int(jt[2])])
     else:
-        _add_detail_label("Job: idle")
+        _set_detail_label("job", "Job: idle")
     var needs: Dictionary = summary.get("needs", {})
-    _add_detail_label("— Needs —")
-    _add_need_bar("Hunger", int(needs.get("hunger", 0)))
-    _add_need_bar("Energy", int(needs.get("energy", 0)))
-    _add_need_bar("Morale", int(needs.get("morale", 0)))
+    _set_need_bar("hunger", int(needs.get("hunger", 0)))
+    _set_need_bar("energy", int(needs.get("energy", 0)))
+    _set_need_bar("morale", int(needs.get("morale", 0)))
     var skills: Dictionary = summary.get("skills", {})
     var skill_keys: Array = skills.keys()
     skill_keys.sort()
     var skill_text: Array = []
     for k in skill_keys:
         skill_text.append("%s %d" % [str(k).capitalize(), int(skills[k])])
-    _add_detail_label("Skills: %s" % (", ".join(skill_text) if not skill_text.is_empty() else "none"))
+    _set_detail_label("skills", "Skills: %s" % (", ".join(skill_text) if not skill_text.is_empty() else "none"))
     var inventory: Array = summary.get("inventory", [])
-    _add_detail_label("Carrying: %s" % (str(inventory.size()) + " item(s)" if not inventory.is_empty() else "nothing"))
-    _add_detail_label("— Work —")
+    _set_detail_label("inventory", "Carrying: %s" % (str(inventory.size()) + " item(s)" if not inventory.is_empty() else "nothing"))
     var allowed: Array = summary.get("allowed_jobs", [])
     var priorities: Dictionary = summary.get("job_type_priorities", {})
     for job in WORKER_JOB_TYPES:
-        _add_job_row(job, allowed.has(job), int(priorities.get(job, 1)))
+        var is_allowed: bool = allowed.has(job)
+        var checkbox: CheckBox = _detail_job_checkboxes.get(job)
+        if checkbox != null:
+            checkbox.set_pressed_no_signal(is_allowed)
+        var spin: SpinBox = _detail_job_spins.get(job)
+        if spin != null:
+            spin.set_value_no_signal(clampi(int(priorities.get(job, 1)), 1, 9))
+            spin.editable = is_allowed
 
-func _add_detail_label(text: String) -> void:
+func _set_detail_label(key: String, text: String) -> void:
+    var label: Label = _detail_labels.get(key)
+    if label != null:
+        label.text = text
+
+func _set_need_bar(key: String, value: int) -> void:
+    var bar: ProgressBar = _detail_need_bars.get(key)
+    if bar != null:
+        bar.value = clampi(value, 0, 100)
+
+func _add_detail_label(text: String) -> Label:
     var label := Label.new()
     label.text = text
     worker_detail_body.add_child(label)
+    return label
 
-func _add_need_bar(label_text: String, value: int) -> void:
+func _add_need_bar(label_text: String) -> ProgressBar:
     var row := HBoxContainer.new()
     row.add_theme_constant_override("separation", 6)
     var label := Label.new()
@@ -380,27 +444,26 @@ func _add_need_bar(label_text: String, value: int) -> void:
     var bar := ProgressBar.new()
     bar.min_value = 0
     bar.max_value = 100
-    bar.value = clampi(value, 0, 100)
     bar.custom_minimum_size = Vector2(200, 18)
     row.add_child(bar)
     worker_detail_body.add_child(row)
+    return bar
 
-func _add_job_row(job_type: String, allowed: bool, priority: int) -> void:
+func _add_job_row(job_type: String) -> void:
     var row := HBoxContainer.new()
     row.add_theme_constant_override("separation", 6)
     var checkbox := CheckBox.new()
     checkbox.text = job_type.capitalize()
     checkbox.custom_minimum_size = Vector2(200, 0)
-    checkbox.set_pressed_no_signal(allowed)
     checkbox.toggled.connect(_on_worker_job_toggled.bind(job_type))
     row.add_child(checkbox)
+    _detail_job_checkboxes[job_type] = checkbox
     var spin := SpinBox.new()
     spin.min_value = 1
     spin.max_value = 9
-    spin.value = clampi(priority, 1, 9)
-    spin.editable = allowed
     spin.value_changed.connect(_on_worker_priority_changed.bind(job_type))
     row.add_child(spin)
+    _detail_job_spins[job_type] = spin
     worker_detail_body.add_child(row)
 
 func _on_worker_job_toggled(enabled: bool, job_type: String) -> void:
