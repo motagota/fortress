@@ -49,6 +49,9 @@ func _init(pid: String = "", ptype: String = "CHOP_TREE", ptarget: Vector3i = Ve
 		"COOK_MEAL":
 			produced_items = {"meal": 1}
 			work_remaining_ticks = 4
+		"CATCH_ANIMAL":
+			produced_items = {}
+			work_remaining_ticks = 3
 
 func advance_work_tick() -> bool:
 	if status == "complete":

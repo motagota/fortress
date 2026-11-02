@@ -18,6 +18,13 @@ var _units: MeshInstance3D
 var _overlay: MeshInstance3D
 var _stockpiles: MeshInstance3D
 var _preview: MeshInstance3D
+var _animals: MeshInstance3D
+var _nets: MeshInstance3D
+var _tick_fraction: float = 0.0
+
+const NET_COLOR := Color(0.93, 0.89, 0.72)
+const NET_WEIGHT_COLOR := Color(0.25, 0.22, 0.2)
+const ROPE_COLOR := Color(0.75, 0.62, 0.4)
 
 func _ready() -> void:
     _resolve_nodes()
@@ -29,6 +36,8 @@ func _resolve_nodes() -> void:
     _stockpiles = _ensure_mesh_node("StockpileTiles")
     _preview = _ensure_mesh_node("StockpilePreview")
     _overlay = _ensure_mesh_node("Overlay")
+    _animals = _ensure_mesh_node("Animals")
+    _nets = _ensure_mesh_node("Nets")
 
 func _ensure_mesh_node(node_name: String) -> MeshInstance3D:
     var existing := get_node_or_null(node_name)
@@ -62,7 +71,19 @@ func sync_from_simulation(simulation) -> void:
     _sync_stockpiles(simulation)
     _sync_markers(simulation)
     _sync_units(simulation)
+    _sync_animals(simulation)
+    _sync_nets(simulation)
     _sync_overlay(simulation)
+
+# Called every frame with how far (0..1) the clock is toward the next tick, so
+# nets in flight glide smoothly instead of hopping once per tick.
+func set_tick_fraction(fraction: float) -> void:
+    var clamped: float = clampf(fraction, 0.0, 1.0)
+    if is_equal_approx(clamped, _tick_fraction):
+        return
+    _tick_fraction = clamped
+    if _simulation != null and not _simulation.nets.is_empty():
+        _sync_nets(_simulation)
 
 # Live preview of a stockpile drag rectangle (cells may be Vector3i or [x,y,z]).
 func set_stockpile_preview(cells: Array) -> void:
@@ -196,7 +217,130 @@ func _sync_units(simulation) -> void:
         if unit.position.y != active_layer:
             continue
         _append_box(data, Vector3(float(unit.position.x), 0.6, float(unit.position.z)), Vector3(0.5, 0.9, 0.5), Color(0.95, 0.86, 0.4))
+        if unit.state == "aiming" or unit.state == "shooting":
+            _append_net_launcher(data, simulation, unit)
     _apply_mesh(_units, data, false)
+
+# A stubby net gun held out toward the target animal.
+func _append_net_launcher(data: Dictionary, simulation, unit) -> void:
+    var job = simulation.job_board.jobs.get(unit.current_job_id)
+    if job == null:
+        return
+    var center := Vector3(float(unit.position.x), 0.75, float(unit.position.z))
+    var dir := Vector3(float(job.target_cell.x - unit.position.x), 0.0, float(job.target_cell.z - unit.position.z))
+    if dir.length() < 0.01:
+        dir = Vector3(1, 0, 0)
+    var size: Vector3
+    if absf(dir.x) >= absf(dir.z):
+        dir = Vector3(signf(dir.x), 0, 0)
+        size = Vector3(0.5, 0.14, 0.14)
+    else:
+        dir = Vector3(0, 0, signf(dir.z))
+        size = Vector3(0.14, 0.14, 0.5)
+    _append_box(data, center + dir * 0.4, size, Color(0.3, 0.32, 0.36))
+    # Muzzle with a folded net poking out while aiming.
+    if unit.state == "aiming":
+        _append_box(data, center + dir * 0.68, Vector3(0.18, 0.18, 0.18), NET_COLOR)
+
+# --- Animals ------------------------------------------------------------------
+
+func _sync_animals(simulation) -> void:
+    var data: Dictionary = _new_mesh()
+    for animal_id in simulation.animals.keys():
+        var animal = simulation.animals[animal_id]
+        if animal.position.y != active_layer:
+            continue
+        var base := Vector3(float(animal.position.x), 0.0, float(animal.position.z))
+        match animal.species:
+            "deer":
+                _append_deer(data, base)
+            _:
+                _append_rabbit(data, base)
+        if animal.is_netted():
+            _append_net_cage(data, base, 0.95 if animal.species == "deer" else 0.6)
+    _apply_mesh(_animals, data, false)
+
+func _append_rabbit(data: Dictionary, base: Vector3) -> void:
+    var fur := Color(0.62, 0.55, 0.47)
+    _append_box(data, base + Vector3(0, 0.18, 0.05), Vector3(0.32, 0.24, 0.42), fur)
+    _append_box(data, base + Vector3(0, 0.3, -0.2), Vector3(0.2, 0.2, 0.2), fur)
+    _append_box(data, base + Vector3(-0.05, 0.5, -0.22), Vector3(0.05, 0.22, 0.06), fur)
+    _append_box(data, base + Vector3(0.05, 0.5, -0.22), Vector3(0.05, 0.22, 0.06), fur)
+    _append_box(data, base + Vector3(0, 0.24, 0.28), Vector3(0.1, 0.1, 0.08), Color(0.95, 0.95, 0.93))
+
+func _append_deer(data: Dictionary, base: Vector3) -> void:
+    var coat := Color(0.58, 0.38, 0.2)
+    _append_box(data, base + Vector3(0, 0.55, 0.05), Vector3(0.34, 0.3, 0.7), coat)
+    for leg in [Vector3(-0.12, 0.2, -0.22), Vector3(0.12, 0.2, -0.22), Vector3(-0.12, 0.2, 0.3), Vector3(0.12, 0.2, 0.3)]:
+        _append_box(data, base + leg, Vector3(0.07, 0.4, 0.07), _shade(coat, 0.75))
+    _append_box(data, base + Vector3(0, 0.8, -0.3), Vector3(0.12, 0.3, 0.12), coat)
+    _append_box(data, base + Vector3(0, 0.95, -0.4), Vector3(0.16, 0.14, 0.24), coat)
+    var antler := Color(0.85, 0.8, 0.68)
+    _append_box(data, base + Vector3(-0.08, 1.12, -0.36), Vector3(0.04, 0.2, 0.04), antler)
+    _append_box(data, base + Vector3(0.08, 1.12, -0.36), Vector3(0.04, 0.2, 0.04), antler)
+    _append_box(data, base + Vector3(0, 1.2, -0.36), Vector3(0.28, 0.04, 0.04), antler)
+    _append_box(data, base + Vector3(0, 0.62, 0.42), Vector3(0.08, 0.1, 0.06), Color(0.95, 0.95, 0.93))
+
+# A net draped over a caught animal: a lattice of strands over the top and down
+# the sides, pinned by weights at the corners.
+func _append_net_cage(data: Dictionary, base: Vector3, height: float) -> void:
+    var half: float = 0.46
+    var strand: float = 0.03
+    var steps: int = 5
+    for i in range(steps):
+        var t: float = -half + (2.0 * half) * float(i) / float(steps - 1)
+        _append_box(data, base + Vector3(t, height, 0), Vector3(strand, strand, half * 2.0), NET_COLOR)
+        _append_box(data, base + Vector3(0, height, t), Vector3(half * 2.0, strand, strand), NET_COLOR)
+        for side in [-half, half]:
+            _append_box(data, base + Vector3(t, height * 0.5, side), Vector3(strand, height, strand), NET_COLOR)
+            _append_box(data, base + Vector3(side, height * 0.5, t), Vector3(strand, height, strand), NET_COLOR)
+    for side in [Vector3(-half, 0.05, -half), Vector3(half, 0.05, -half), Vector3(-half, 0.05, half), Vector3(half, 0.05, half)]:
+        _append_box(data, base + side, Vector3(0.1, 0.1, 0.1), NET_WEIGHT_COLOR)
+
+# --- Nets in flight -----------------------------------------------------------
+
+func _sync_nets(simulation) -> void:
+    var data: Dictionary = _new_mesh()
+    for net_id in simulation.nets.keys():
+        var net = simulation.nets[net_id]
+        if not net.is_flying() or net.origin.y != active_layer:
+            continue
+        var target: Vector3 = Vector3(float(net.origin.x), 0.0, float(net.origin.z))
+        if simulation.animals.has(net.target_animal_id):
+            var animal_pos: Vector3i = simulation.animals[net.target_animal_id].position
+            target = Vector3(float(animal_pos.x), 0.0, float(animal_pos.z))
+        var start := Vector3(float(net.origin.x), 0.0, float(net.origin.z))
+        var t: float = net.flight_progress(_tick_fraction)
+        var ground: Vector3 = start.lerp(target, t)
+        # Lobbed arc: launched from the gun's height, peaking mid-flight, dropping onto the animal.
+        var arc_height: float = lerpf(0.75, 1.0, t) + sin(t * PI) * 1.6
+        var center := Vector3(ground.x, arc_height, ground.z)
+        # The net unfurls as it flies. The camera looks straight down, so the
+        # lob also swells the net near its apex and leaves a shadow on the ground.
+        var lift: float = sin(t * PI)
+        var span: float = lerpf(0.25, 1.0, t) * (1.0 + 0.45 * lift)
+        _append_box(data, Vector3(ground.x, 0.07, ground.z), Vector3(span * 0.8, 0.02, span * 0.8), Color(0.1, 0.18, 0.08))
+        _append_flying_net(data, center, span)
+        _append_rope(data, start + Vector3(0, 0.75, 0), center)
+    _apply_mesh(_nets, data, false)
+
+func _append_flying_net(data: Dictionary, center: Vector3, span: float) -> void:
+    var half: float = span * 0.5
+    var strand: float = 0.035
+    var steps: int = 5
+    for i in range(steps):
+        var t: float = -half + span * float(i) / float(steps - 1)
+        _append_box(data, center + Vector3(t, 0, 0), Vector3(strand, strand, span), NET_COLOR)
+        _append_box(data, center + Vector3(0, 0, t), Vector3(span, strand, strand), NET_COLOR)
+    for corner in [Vector3(-half, -0.05, -half), Vector3(half, -0.05, -half), Vector3(-half, -0.05, half), Vector3(half, -0.05, half)]:
+        _append_box(data, center + corner, Vector3(0.09, 0.09, 0.09), NET_WEIGHT_COLOR)
+
+# A tether trailing back to the shooter, drawn as a dotted line of beads.
+func _append_rope(data: Dictionary, from: Vector3, to: Vector3) -> void:
+    var beads: int = int(clampf(from.distance_to(to) / 0.18, 2.0, 40.0))
+    for i in range(1, beads):
+        var p: Vector3 = from.lerp(to, float(i) / float(beads))
+        _append_box(data, p, Vector3(0.04, 0.04, 0.04), ROPE_COLOR)
 
 # --- Overlay (designations + hover) -------------------------------------------
 
@@ -206,6 +350,9 @@ func _sync_overlay(simulation) -> void:
         var job = simulation.job_board.jobs[job_id]
         if job.target_cell.y != active_layer:
             continue
+        if job.type == "CATCH_ANIMAL":
+            _append_catch_marker(data, simulation, job)
+            continue
         var color: Color = _designation_color(job.type)
         if color.a <= 0.0:
             continue
@@ -213,6 +360,21 @@ func _sync_overlay(simulation) -> void:
     if hover_cell != INVALID_CELL and hover_cell.y == active_layer:
         _append_box(data, Vector3(float(hover_cell.x), 0.98, float(hover_cell.z)), Vector3(1.0, 0.06, 1.0), Color(1.0, 0.95, 0.35, 0.55))
     _apply_mesh(_overlay, data, true)
+
+# Crosshair-style ring that follows a hunted animal.
+func _append_catch_marker(data: Dictionary, simulation, job) -> void:
+    var animal_id: String = str(job.required_items.get("animal_id", ""))
+    if not simulation.animals.has(animal_id):
+        return
+    var animal = simulation.animals[animal_id]
+    if animal.position.y != active_layer or animal.is_netted():
+        return
+    var c := Vector3(float(animal.position.x), 0.08, float(animal.position.z))
+    var color := Color(1.0, 0.35, 0.2, 0.75)
+    _append_box(data, c + Vector3(0, 0, -0.45), Vector3(0.9, 0.04, 0.08), color)
+    _append_box(data, c + Vector3(0, 0, 0.45), Vector3(0.9, 0.04, 0.08), color)
+    _append_box(data, c + Vector3(-0.45, 0, 0), Vector3(0.08, 0.04, 0.9), color)
+    _append_box(data, c + Vector3(0.45, 0, 0), Vector3(0.08, 0.04, 0.9), color)
 
 # --- Colors -------------------------------------------------------------------
 
@@ -260,6 +422,8 @@ func _item_color(item_type: String) -> Color:
         "coal": return Color(0.1, 0.1, 0.1)
         "iron_ore": return Color(0.64, 0.3, 0.22)
         "copper_ore": return Color(0.78, 0.42, 0.2)
+        "caught_rabbit": return Color(0.62, 0.55, 0.47)
+        "caught_deer": return Color(0.58, 0.38, 0.2)
     return Color(0.8, 0.8, 0.4)
 
 func _designation_color(job_type: String) -> Color:

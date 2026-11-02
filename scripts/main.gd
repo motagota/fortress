@@ -10,7 +10,7 @@ const C := preload("res://scripts/simulation/world_constants.gd")
 
 const INVALID_CELL := Vector3i(-2147483648, -2147483648, -2147483648)
 const SAVE_PATH := "user://saves/quicksave.json"
-const STOCKPILE_DEFAULT_ITEMS := ["wood", "stone", "dirt", "food", "meal", "mud_brick", "wood_plank"]
+const STOCKPILE_DEFAULT_ITEMS := ["wood", "stone", "dirt", "food", "meal", "mud_brick", "wood_plank", "caught_rabbit", "caught_deer"]
 
 const TOOL_INSPECT := "inspect"
 const TOOL_CHOP := "chop"
@@ -24,6 +24,7 @@ const TOOL_KITCHEN := "kitchen"
 const TOOL_KILN := "kiln"
 const TOOL_CARPENTER := "carpenter"
 const TOOL_WALL := "wall"
+const TOOL_NET := "net"
 
 const TOOL_BUILDINGS := {
     TOOL_KITCHEN: "kitchen",
@@ -89,6 +90,10 @@ func _process(delta: float) -> void:
         simulation.step_tick()
     if steps > 0:
         _sync()
+    # Smoothly animate nets in flight between simulation ticks.
+    if world_root != null and world_root.has_method("set_tick_fraction") and sim_clock.base_tick_interval_seconds > 0.0:
+        var fraction: float = 0.0 if sim_clock.paused else sim_clock.accumulated_seconds / sim_clock.base_tick_interval_seconds
+        world_root.set_tick_fraction(fraction)
 
 func _notification(what: int) -> void:
     if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -122,6 +127,7 @@ func _unhandled_input(event: InputEvent) -> void:
             KEY_0: set_active_tool(TOOL_WALL)
             KEY_K: set_active_tool(TOOL_KILN)
             KEY_B: set_active_tool(TOOL_CARPENTER)
+            KEY_N: set_active_tool(TOOL_NET)
             KEY_E: _change_layer(1)
             KEY_C: _change_layer(-1)
             KEY_R: _toggle_workers_panel()
@@ -192,6 +198,10 @@ func _handle_click(cell: Vector3i) -> void:
     var next_tick: int = simulation.tick + 1
     if TOOL_COMMANDS.has(active_tool):
         simulation.queue_command(next_tick, "player_001", str(TOOL_COMMANDS[active_tool]), cell, {"priority": 5})
+        _hide_details()
+        _hide_config()
+    elif active_tool == TOOL_NET:
+        simulation.queue_command(next_tick, "player_001", "DESIGNATE_CATCH_ANIMAL", cell, {"priority": 5})
         _hide_details()
         _hide_config()
     elif TOOL_BUILDINGS.has(active_tool):
@@ -409,6 +419,13 @@ func _describe_cell(cell: Vector3i) -> String:
             unit_descriptions.append("%s (%s)" % [unit.display_name, unit.state])
     if not unit_descriptions.is_empty():
         lines.append("Units: " + ", ".join(unit_descriptions))
+    var animal_descriptions: Array[String] = []
+    for animal_id in simulation.animals.keys():
+        var animal = simulation.animals[animal_id]
+        if animal.position == cell:
+            animal_descriptions.append("%s (%s)" % [animal.species, animal.state])
+    if not animal_descriptions.is_empty():
+        lines.append("Animals: " + ", ".join(animal_descriptions))
     return "\n".join(lines)
 
 # --- Picking / sync -----------------------------------------------------------

@@ -16,6 +16,8 @@ const BuildingDefinitionScript := preload("res://scripts/simulation/building_def
 const ConstructionRecordScript := preload("res://scripts/simulation/construction_record.gd")
 const JobScript := preload("res://scripts/simulation/job.gd")
 const JobBoardScript := preload("res://scripts/simulation/job_board.gd")
+const AnimalScript := preload("res://scripts/simulation/animal.gd")
+const NetScript := preload("res://scripts/simulation/net_projectile.gd")
 
 const INITIAL_UNIT_COUNT := 6
 const HUNGER_EAT_THRESHOLD := 20
@@ -30,6 +32,14 @@ const WALL_CAVE_IN_DEPTH_SCALE := 40.0      # depth (below surface) for full col
 const UNREACHABLE_JOB_RELEASE_TICKS := 4
 const PATHFIND_MAX_NODES := 8000
 const INVALID_CELL := Vector3i(-2147483648, -2147483648, -2147483648)
+
+# --- Wildlife / net hunting ---------------------------------------------------
+const INITIAL_ANIMAL_COUNT := 8
+const ANIMAL_SPECIES: Array[String] = ["rabbit", "deer"]
+const ANIMAL_MOVE_CHANCE := 250            # per-mille chance a wild animal steps each tick
+const NET_RANGE := 5                       # max horizontal distance a colonist throws a net
+const NET_AIM_TICKS := 3                   # wind-up before the net is fired
+const NET_FLIGHT_BASE_TICKS := 3           # flight time = base + distance
 
 const TOOL_MINE := "mine"
 const TOOL_CHANNEL := "channel"
@@ -48,8 +58,10 @@ var constructions: Dictionary = {}
 var workshop_orders: Dictionary = {}
 var resources: Dictionary = {}
 var job_board
+var animals: Dictionary = {}
+var nets: Dictionary = {}
 var command_queue: Array[Dictionary] = []
-var id_counters: Dictionary = {"unit": 0, "job": 0, "item": 0, "command": 0, "building": 0, "stockpile": 0, "construction": 0, "workshop_order": 0}
+var id_counters: Dictionary = {"unit": 0, "job": 0, "item": 0, "command": 0, "building": 0, "stockpile": 0, "construction": 0, "workshop_order": 0, "animal": 0, "net": 0}
 
 # --- Lifecycle ----------------------------------------------------------------
 
@@ -60,19 +72,23 @@ func initialize_new_game(seed_value: int = 1) -> void:
         "world_rng": RngScript.new(seed_value),
         "unit_rng": RngScript.new(seed_value ^ 0x00c0ffee),
         "event_rng": RngScript.new(seed_value ^ 0x005eeded),
+        "animal_rng": RngScript.new(seed_value ^ 0x00a11ce5),
     }
     command_queue = []
-    id_counters = {"unit": 0, "job": 0, "item": 0, "command": 0, "building": 0, "stockpile": 0, "construction": 0, "workshop_order": 0}
+    id_counters = {"unit": 0, "job": 0, "item": 0, "command": 0, "building": 0, "stockpile": 0, "construction": 0, "workshop_order": 0, "animal": 0, "net": 0}
     resources = {}
     items = {}
     stockpiles = {}
     constructions = {}
     workshop_orders = {}
     units = {}
+    animals = {}
+    nets = {}
     job_board = JobBoardScript.new()
     world = WorldScript.new()
     WorldgenScript.generate(world, resources, world_seed)
     _spawn_initial_units()
+    _spawn_initial_animals()
 
 func allocate_id(prefix: String) -> String:
     id_counters[prefix] = int(id_counters.get(prefix, 0)) + 1
@@ -109,8 +125,10 @@ func step_tick() -> void:
     create_workshop_jobs_for_ready_orders()
     _advance_needs()
     _feed_hungry_units()
+    _advance_animals()
     _assign_jobs()
     _advance_units()
+    _advance_nets()
     _process_cave_ins()
     _cleanup_completed_jobs()
 
@@ -211,6 +229,8 @@ func _apply_command(command: Dictionary) -> void:
             set_unit_name(str(payload.get("unit_id", "")), str(payload.get("name", "")))
         "SET_UNIT_ALLOWED_JOB":
             set_unit_allowed_job(str(payload.get("unit_id", "")), str(payload.get("job_type", "")), bool(payload.get("enabled", true)))
+        "DESIGNATE_CATCH_ANIMAL":
+            designate_catch_animal(target, priority, str(payload.get("animal_id", "")))
 
 # --- Job creation -------------------------------------------------------------
 
@@ -444,6 +464,9 @@ func _advance_units() -> void:
         if job.type == "HAUL_ITEM":
             _advance_haul_job(unit, job)
             continue
+        if job.type == "CATCH_ANIMAL":
+            _advance_catch_job(unit, job)
+            continue
         var dest: Vector3i = _job_destination(job)
         if unit.position != dest:
             var next_cell: Vector3i = _step_towards(unit.position, dest)
@@ -475,6 +498,8 @@ func _release_job_if_unreachable(unit, job) -> bool:
     if job.type == "HAUL_ITEM":
         _return_carried_item(unit, job)
         job.required_items["phase"] = "pickup"
+    if job.type == "CATCH_ANIMAL" and str(job.required_items.get("phase", "")) != "collect":
+        job.required_items["phase"] = "approach"
     job_board.release_job(job.id, unit.id)
     unit.current_job_id = ""
     unit.unreachable_job_ticks = 0
@@ -811,6 +836,203 @@ func _path_between(from_cell: Vector3i, to_cell: Vector3i) -> Array:
         step = came_from[_cell_key(step)]
         path.push_front(step)
     return path
+
+
+# --- Wildlife -----------------------------------------------------------------
+
+func _spawn_initial_animals() -> void:
+    var rng = rng_streams["animal_rng"]
+    var attempts: int = 0
+    while animals.size() < INITIAL_ANIMAL_COUNT and attempts < 400:
+        attempts += 1
+        # Scatter animals in a ring around the colony clearing so they're nearby
+        # but not underfoot.
+        var x: int = rng.range_i(8, C.WIDTH - 9)
+        var z: int = rng.range_i(8, C.DEPTH - 9)
+        if x >= 18 and x <= 30 and z >= 18 and z <= 30:
+            continue
+        var addr := Vector3i(x, world.surface_y(x, z), z)
+        if not world.is_walkable(addr) or _animal_at(addr) != "":
+            continue
+        var species: String = ANIMAL_SPECIES[rng.range_i(0, ANIMAL_SPECIES.size() - 1)]
+        spawn_animal(species, addr)
+
+func spawn_animal(species: String, addr: Vector3i) -> String:
+    var id: String = allocate_id("animal")
+    animals[id] = AnimalScript.new(id, species, addr)
+    return id
+
+func _animal_at(addr: Vector3i) -> String:
+    for id in _sorted_ids(animals):
+        if animals[id].position == addr:
+            return id
+    return ""
+
+# Wild animals amble around on their layer; netted ones stay put.
+func _advance_animals() -> void:
+    var rng = rng_streams["animal_rng"]
+    for id in _sorted_ids(animals):
+        var animal = animals[id]
+        if not animal.is_wild():
+            continue
+        if not rng.chance(ANIMAL_MOVE_CHANCE):
+            continue
+        var options: Array = []
+        for offset in [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1)]:
+            var next: Vector3i = animal.position + offset
+            if world.is_walkable(next) and _animal_at(next) == "":
+                options.append(next)
+        if options.is_empty():
+            continue
+        animal.position = options[rng.range_i(0, options.size() - 1)]
+
+# --- Net hunting --------------------------------------------------------------
+
+# Mark an animal for capture. Clicking near (within one tile of) a wild animal
+# is enough, since they move around.
+func designate_catch_animal(target: Vector3i, priority: int = 1, animal_id: String = "") -> String:
+    if animal_id == "":
+        animal_id = _nearest_wild_animal(target, 1)
+    if animal_id == "" or not animals.has(animal_id):
+        return ""
+    var animal = animals[animal_id]
+    if not animal.is_wild() or _catch_job_for_animal(animal_id) != "":
+        return ""
+    var job = JobScript.new(allocate_id("job"), "CATCH_ANIMAL", animal.position, priority)
+    job.required_items = {"animal_id": animal_id, "phase": "approach", "net_id": ""}
+    job.work_remaining_ticks = NET_AIM_TICKS
+    job_board.add_job(job)
+    return job.id
+
+func _nearest_wild_animal(target: Vector3i, max_distance: int) -> String:
+    var best: String = ""
+    var best_dist: int = max_distance + 1
+    for id in _sorted_ids(animals):
+        var animal = animals[id]
+        if not animal.is_wild() or animal.position.y != target.y:
+            continue
+        var d: int = abs(animal.position.x - target.x) + abs(animal.position.z - target.z)
+        if d < best_dist:
+            best = id
+            best_dist = d
+    return best
+
+func _catch_job_for_animal(animal_id: String) -> String:
+    for job_id in job_board.sorted_job_ids():
+        var job = job_board.jobs[job_id]
+        if job.type == "CATCH_ANIMAL" and job.status in ["open", "claimed", "in_progress"] \
+                and str(job.required_items.get("animal_id", "")) == animal_id:
+            return job_id
+    return ""
+
+func _horizontal_distance(a: Vector3i, b: Vector3i) -> int:
+    return abs(a.x - b.x) + abs(a.z - b.z)
+
+# Phases: approach -> aim -> wait (net in flight) -> collect.
+func _advance_catch_job(unit, job) -> void:
+    var animal_id: String = str(job.required_items.get("animal_id", ""))
+    if not animals.has(animal_id):
+        _fail_job(unit, job)
+        return
+    var animal = animals[animal_id]
+    job.target_cell = animal.position
+    var phase: String = str(job.required_items.get("phase", "approach"))
+    if job.status == "claimed":
+        job.status = "in_progress"
+
+    if phase == "approach":
+        if not animal.is_wild():
+            _fail_job(unit, job)
+            return
+        var in_range: bool = unit.position.y == animal.position.y \
+            and _horizontal_distance(unit.position, animal.position) <= NET_RANGE
+        if in_range:
+            job.required_items["phase"] = "aim"
+            job.work_remaining_ticks = NET_AIM_TICKS
+            unit.unreachable_job_ticks = 0
+            unit.state = "aiming"
+            return
+        var next_cell: Vector3i = _step_towards(unit.position, animal.position)
+        if next_cell == unit.position:
+            _release_job_if_unreachable(unit, job)
+            return
+        unit.unreachable_job_ticks = 0
+        unit.position = next_cell
+        unit.state = "stalking"
+        return
+
+    if phase == "aim":
+        if not animal.is_wild():
+            _fail_job(unit, job)
+            return
+        # The target wandered off before the shot: chase it again.
+        if unit.position.y != animal.position.y or _horizontal_distance(unit.position, animal.position) > NET_RANGE:
+            job.required_items["phase"] = "approach"
+            unit.state = "stalking"
+            return
+        unit.state = "aiming"
+        job.work_remaining_ticks = max(0, job.work_remaining_ticks - 1)
+        if job.work_remaining_ticks > 0:
+            return
+        var distance: int = _horizontal_distance(unit.position, animal.position)
+        var net_id: String = allocate_id("net")
+        nets[net_id] = NetScript.new(net_id, unit.id, job.id, animal_id, unit.position, NET_FLIGHT_BASE_TICKS + distance)
+        job.required_items["net_id"] = net_id
+        job.required_items["phase"] = "wait"
+        unit.state = "shooting"
+        return
+
+    if phase == "wait":
+        unit.state = "shooting"
+        if animal.is_netted():
+            job.required_items["phase"] = "collect"
+        elif not nets.has(str(job.required_items.get("net_id", ""))):
+            # Net vanished without a catch: line up another throw.
+            job.required_items["phase"] = "approach"
+        return
+
+    # collect: walk over and gather up the netted animal.
+    if unit.position != animal.position:
+        var step: Vector3i = _step_towards(unit.position, animal.position)
+        if step == unit.position:
+            _release_job_if_unreachable(unit, job)
+            return
+        unit.unreachable_job_ticks = 0
+        unit.position = step
+        unit.state = "walking"
+        return
+    _complete_catch_job(unit, job, animal)
+
+func _complete_catch_job(unit, job, animal) -> void:
+    var net_id: String = animal.netted_by_net_id
+    if nets.has(net_id):
+        nets.erase(net_id)
+    animals.erase(animal.id)
+    _spawn_item("caught_" + animal.species, 1, animal.position)
+    _finish_job(unit, job)
+
+# Nets home in on their target; when the flight finishes the animal is caught.
+func _advance_nets() -> void:
+    for net_id in _sorted_ids(nets):
+        var net = nets[net_id]
+        if not net.is_flying():
+            continue
+        if not animals.has(net.target_animal_id) or not animals[net.target_animal_id].is_wild():
+            nets.erase(net_id)
+            continue
+        var animal = animals[net.target_animal_id]
+        net.flight_ticks_done += 1
+        if net.flight_ticks_done < net.flight_ticks_total:
+            var t: float = float(net.flight_ticks_done) / float(net.flight_ticks_total)
+            net.position = Vector3i(
+                int(round(lerpf(float(net.origin.x), float(animal.position.x), t))),
+                animal.position.y,
+                int(round(lerpf(float(net.origin.z), float(animal.position.z), t))))
+            continue
+        net.position = animal.position
+        net.state = NetScript.STATE_LANDED
+        animal.state = AnimalScript.STATE_NETTED
+        animal.netted_by_net_id = net_id
 
 # --- Stockpiles ---------------------------------------------------------------
 
@@ -1324,6 +1546,8 @@ func canonical_snapshot() -> Dictionary:
         "world_hash": world.content_hash(),
         "resources": _resources_snapshot(),
         "units": _object_snapshot(units),
+        "animals": _object_snapshot(animals),
+        "nets": _object_snapshot(nets),
         "items": _object_snapshot(items),
         "stockpiles": _object_snapshot(stockpiles),
         "constructions": _object_snapshot(constructions),
@@ -1340,6 +1564,7 @@ func _rng_snapshot() -> Dictionary:
         "event_rng": rng_streams["event_rng"].to_canonical_dict(),
         "unit_rng": rng_streams["unit_rng"].to_canonical_dict(),
         "world_rng": rng_streams["world_rng"].to_canonical_dict(),
+        "animal_rng": rng_streams["animal_rng"].to_canonical_dict(),
     }
 
 func _resources_snapshot() -> Array:

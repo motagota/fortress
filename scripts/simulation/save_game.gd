@@ -20,6 +20,8 @@ const StockpileScript := preload("res://scripts/simulation/stockpile.gd")
 const ConstructionRecordScript := preload("res://scripts/simulation/construction_record.gd")
 const JobScript := preload("res://scripts/simulation/job.gd")
 const JobBoardScript := preload("res://scripts/simulation/job_board.gd")
+const AnimalScript := preload("res://scripts/simulation/animal.gd")
+const NetScript := preload("res://scripts/simulation/net_projectile.gd")
 
 # --- Serialization ------------------------------------------------------------
 
@@ -36,10 +38,13 @@ static func to_dict(sim) -> Dictionary:
 			"event_rng": int(sim.rng_streams["event_rng"].get_state()),
 			"unit_rng": int(sim.rng_streams["unit_rng"].get_state()),
 			"world_rng": int(sim.rng_streams["world_rng"].get_state()),
+			"animal_rng": int(sim.rng_streams["animal_rng"].get_state()),
 		},
 		"cell_diffs": _diff_world(sim.world, reference),
 		"resources": sim.resources.duplicate(true),
 		"units": sim._object_snapshot(sim.units),
+		"animals": sim._object_snapshot(sim.animals),
+		"nets": sim._object_snapshot(sim.nets),
 		"items": sim._object_snapshot(sim.items),
 		"stockpiles": sim._object_snapshot(sim.stockpiles),
 		"constructions": sim._object_snapshot(sim.constructions),
@@ -90,9 +95,14 @@ static func from_dict(raw_data: Dictionary):
 	sim.rng_streams["event_rng"].set_state(int(rng.get("event_rng", sim.rng_streams["event_rng"].get_state())))
 	sim.rng_streams["unit_rng"].set_state(int(rng.get("unit_rng", sim.rng_streams["unit_rng"].get_state())))
 	sim.rng_streams["world_rng"].set_state(int(rng.get("world_rng", sim.rng_streams["world_rng"].get_state())))
+	sim.rng_streams["animal_rng"].set_state(int(rng.get("animal_rng", sim.rng_streams["animal_rng"].get_state())))
 	_apply_cell_diffs(sim.world, data.get("cell_diffs", []))
 	sim.resources = data.get("resources", {}).duplicate(true)
 	sim.units = _restore_units(data.get("units", []))
+	# Older saves predate wildlife: keep the freshly spawned animals for those.
+	if data.has("animals"):
+		sim.animals = _restore_animals(data.get("animals", []))
+		sim.nets = _restore_nets(data.get("nets", []))
 	sim.items = _restore_items(data.get("items", []))
 	sim.stockpiles = _restore_stockpiles(data.get("stockpiles", []))
 	sim.constructions = _restore_constructions(data.get("constructions", []))
@@ -183,6 +193,26 @@ static func _restore_units(records: Array) -> Dictionary:
 		unit.needs = record.get("needs", unit.needs).duplicate(true)
 		unit.state = str(record.get("state", "idle"))
 		output[unit.id] = unit
+	return output
+
+static func _restore_animals(records: Array) -> Dictionary:
+	var output: Dictionary = {}
+	for record in records:
+		var animal = AnimalScript.new(str(record["id"]), str(record.get("species", "rabbit")), _vec3(record["position"]))
+		animal.state = str(record.get("state", AnimalScript.STATE_WILD))
+		animal.netted_by_net_id = str(record.get("netted_by_net_id", ""))
+		output[animal.id] = animal
+	return output
+
+static func _restore_nets(records: Array) -> Dictionary:
+	var output: Dictionary = {}
+	for record in records:
+		var net = NetScript.new(str(record["id"]), str(record.get("shooter_unit_id", "")), str(record.get("job_id", "")),
+			str(record.get("target_animal_id", "")), _vec3(record["origin"]), int(record.get("flight_ticks_total", 1)))
+		net.position = _vec3(record["position"])
+		net.state = str(record.get("state", NetScript.STATE_FLYING))
+		net.flight_ticks_done = int(record.get("flight_ticks_done", 0))
+		output[net.id] = net
 	return output
 
 static func _restore_items(records: Array) -> Dictionary:

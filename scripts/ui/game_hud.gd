@@ -22,7 +22,7 @@ signal worker_job_priority_changed(unit_id: String, job_type: String, priority: 
 const WORKER_JOB_TYPES: Array = [
     "CHOP_TREE", "GATHER_STONE", "GATHER_FOOD",
     "MINE_WALL", "CHANNEL_FLOOR", "BUILD_STAIR",
-    "HAUL_ITEM", "BUILD_CONSTRUCTION", "COOK_MEAL",
+    "HAUL_ITEM", "BUILD_CONSTRUCTION", "COOK_MEAL", "CATCH_ANIMAL",
 ]
 
 const TOOL_DEFINITIONS: Array = [
@@ -38,9 +38,10 @@ const TOOL_DEFINITIONS: Array = [
     {"id": "kiln", "label": "K Kiln"},
     {"id": "carpenter", "label": "B Carpenter"},
     {"id": "wall", "label": "0 Wall"},
+    {"id": "net", "label": "N Net"},
 ]
 
-const STOCKPILE_ITEM_TYPES: Array = ["wood", "stone", "dirt", "food", "meal", "mud_brick", "wood_plank"]
+const STOCKPILE_ITEM_TYPES: Array = ["wood", "stone", "dirt", "food", "meal", "mud_brick", "wood_plank", "caught_rabbit", "caught_deer"]
 const WALL_MATERIALS: Array = ["mud_brick", "wood_plank"]
 const RECIPE_LABELS: Dictionary = {
     "make_mud_brick": "Make Mud Brick",
