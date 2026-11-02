@@ -1,0 +1,4 @@
+# Generated meshes / previews (re-created by the scripts)
+generated/
+__pycache__/
+*.pyc
